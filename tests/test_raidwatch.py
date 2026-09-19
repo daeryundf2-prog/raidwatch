@@ -6,7 +6,9 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from raidwatch.artifacts import collect_artifacts
 from raidwatch.cli import main as cli_main
+from raidwatch.common import iso_to_ns, utc_now_iso
 from raidwatch.db import Inventory
 from raidwatch.diff import diff_inventories
 from raidwatch.inventory import build_inventory
@@ -126,6 +128,52 @@ class DiffTests(unittest.TestCase):
             self.assertGreaterEqual(s["content_changed"], 1)
             classes = {c["path"]: c["class"] for c in report["changed"]}
             self.assertEqual(classes["docs/notes.txt"], "content_changed")
+            base.close()
+            cur.close()
+
+    def test_diff_flags_backdated_added_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            base = Inventory(Path(td) / "base.db", create=True)
+            build_inventory(root, base)
+
+            # simulate a planted file whose mtime was stomped into the past
+            planted = _write(root / "docs" / "planted_old.hwp", b"planted")
+            old_ns = iso_to_ns("2001-01-01")
+            os.utime(planted, ns=(old_ns, old_ns))
+
+            cur = Inventory(Path(td) / "cur.db", create=True)
+            build_inventory(root, cur)
+            baseline_created_ns = iso_to_ns(utc_now_iso())
+            report = diff_inventories(
+                base, cur, baseline_created_ns=baseline_created_ns
+            )
+            self.assertEqual(report["summary"]["backdated_added"], 1)
+            planted_entry = next(
+                a for a in report["added"] if a["path"] == "docs/planted_old.hwp"
+            )
+            self.assertTrue(planted_entry["backdated"])
+            base.close()
+            cur.close()
+
+    def test_diff_classifies_atime_only_as_accessed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            base = Inventory(Path(td) / "base.db", create=True)
+            build_inventory(root, base)
+
+            # touch atime only on one file
+            target = root / "docs" / "report.pdf"
+            st = target.stat()
+            os.utime(target, ns=(st.st_atime_ns + 5_000_000_000, st.st_mtime_ns))
+
+            cur = Inventory(Path(td) / "cur.db", create=True)
+            build_inventory(root, cur)
+            report = diff_inventories(base, cur)
+            classes = {c["path"]: c["class"] for c in report["changed"]}
+            self.assertEqual(classes.get("docs/report.pdf"), "accessed")
             base.close()
             cur.close()
 
@@ -255,6 +303,55 @@ class SourcesTests(unittest.TestCase):
             self.assertIn("evidence-item-list", extract_strings(blob))
 
 
+class ArtifactsTests(unittest.TestCase):
+    def test_collects_investigator_traces_and_tools(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "seized-pc"
+            _write(
+                root / "Windows" / "Prefetch" / "FTKIMAGER.EXE-12AB34CD.pf",
+                b"prefetch-data",
+            )
+            _write(
+                root / "Windows" / "Prefetch" / "SVCHOST.EXE-99887766.pf",
+                b"prefetch-data",
+            )
+            _write(
+                root / "Windows" / "System32" / "winevt" / "Logs"
+                / "System.evtx",
+                b"evtx-data",
+            )
+            _write(
+                root / "Users" / "admin" / "AppData" / "Roaming" / "Microsoft"
+                / "Windows" / "Recent" / "secret.lnk",
+                b"L\x00\x00\x00C:\\Users\\admin\\Documents\\secret.hwp\x00",
+            )
+            _write(root / "Windows" / "System32" / "config" / "SYSTEM", b"hive")
+            _write(root / "docs" / "unrelated.txt", b"nope")
+
+            out = Path(td) / "art-out"
+            report = collect_artifacts(root, out)
+            s = report["summary"]
+
+            self.assertGreaterEqual(s["matched"], 4)
+            tools = report["observed_investigator_tools"]
+            self.assertIn("FTK Imager", tools)
+            self.assertNotIn("svchost", json.dumps(tools).lower())
+
+            all_entries = [e for lst in report["artifacts"].values() for e in lst]
+            cats = {e["category"] for e in all_entries}
+            self.assertIn("prefetch", cats)
+            self.assertIn("evtx", cats)
+            self.assertIn("recent_items", cats)
+            self.assertIn("registry_or_device_log", cats)
+            lnk_entry = next(
+                e for e in all_entries if e["path"].endswith("secret.lnk")
+            )
+            self.assertTrue(
+                any("secret.hwp" in t for t in lnk_entry["link_targets_guess"])
+            )
+            self.assertIn("shadow_copies", report)
+
+
 class WatchTests(unittest.TestCase):
     def test_watch_records_changes(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -273,6 +370,27 @@ class WatchTests(unittest.TestCase):
             self.assertIn("snapshot_init", kinds)
             created = [e for e in events if e["event"] == "created"]
             self.assertTrue(any(e["path"] == "intruder.log" for e in created))
+
+    def test_watch_records_process_events(self) -> None:
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            out = Path(td) / "watch"
+            run_watch(root, out, once=True)
+            proc = subprocess.Popen(["sleep", "5"])
+            try:
+                run_watch(root, out, once=True)
+            finally:
+                proc.terminate()
+                proc.wait()
+            events = [
+                json.loads(line)
+                for line in (out / "events.jsonl").read_text(encoding="utf-8").splitlines()
+            ]
+            started = [e for e in events if e["event"] == "process_started"]
+            self.assertTrue(any("sleep" in e["name"] for e in started))
 
 
 class CliTests(unittest.TestCase):

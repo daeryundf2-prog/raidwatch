@@ -8,6 +8,8 @@ monitor planned for Windows; its own termination is also logged.
 from __future__ import annotations
 
 import os
+import platform
+import subprocess
 import time
 from pathlib import Path
 
@@ -48,6 +50,47 @@ def _diff_snap(prev: dict, cur: dict) -> list[dict]:
             events.append(
                 {"event": "modified", "path": path, "detail": {"before": before, "after": after}}
             )
+    return events
+
+
+def _process_snapshot() -> dict[str, str]:
+    """Portable process list: {pid: command_name}.
+
+    New/terminated investigator-tool processes during the raid window are
+    as important as file changes — this is how tool execution is observed.
+    """
+    try:
+        if platform.system() == "Windows":
+            out = subprocess.run(
+                ["tasklist", "/fo", "csv", "/nh"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+            snap = {}
+            for line in out.splitlines():
+                parts = line.strip().strip('"').split('","')
+                if len(parts) >= 2:
+                    snap[parts[1]] = parts[0]
+            return snap
+        out = subprocess.run(
+            ["ps", "-eo", "pid=,comm="],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+        snap = {}
+        for line in out.splitlines()[1:]:
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                snap[parts[0]] = parts[1]
+        return snap
+    except (OSError, subprocess.SubprocessError):
+        return {}
+
+
+def _diff_procs(prev: dict, cur: dict) -> list[dict]:
+    events = []
+    for pid in sorted(set(cur) - set(prev), key=int):
+        events.append({"event": "process_started", "pid": pid, "name": cur[pid]})
+    for pid in sorted(set(prev) - set(cur), key=int):
+        events.append({"event": "process_ended", "pid": pid, "name": prev[pid]})
     return events
 
 
@@ -99,18 +142,33 @@ def run_watch(
         while True:
             prev_state = _load_state(state_path)
             prev = (prev_state or {}).get("files") or {}
+            prev_procs = (prev_state or {}).get("processes") or {}
             cur = snapshot_fs(root)
+            cur_procs = _process_snapshot()
             ts = utc_now_iso()
             if prev_state is None:
                 append_jsonl(
                     events_path,
-                    {"ts": ts, "event": "snapshot_init", "entries": len(cur)},
+                    {
+                        "ts": ts,
+                        "event": "snapshot_init",
+                        "entries": len(cur),
+                        "processes": len(cur_procs),
+                    },
                 )
             else:
-                for ev in _diff_snap(prev, cur):
+                for ev in _diff_snap(prev, cur) + _diff_procs(prev_procs, cur_procs):
                     ev["ts"] = ts
                     append_jsonl(events_path, ev)
-            write_json(state_path, {"ts": ts, "root": str(root), "files": cur})
+            write_json(
+                state_path,
+                {
+                    "ts": ts,
+                    "root": str(root),
+                    "files": cur,
+                    "processes": cur_procs,
+                },
+            )
             passes += 1
             if once or (max_passes is not None and passes >= max_passes):
                 append_jsonl(events_path, {"ts": utc_now_iso(), "event": "pass_complete", "pass": passes})

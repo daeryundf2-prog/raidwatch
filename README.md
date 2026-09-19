@@ -42,9 +42,26 @@ python -m raidwatch verify \
 python -m raidwatch sources /path/to/seized-pc \
   --out case/<case_id>/sources --since 2026-09-19
 
-# 감시 모드 (폴링 스냅샷, Ctrl+C 종료 시 watcher_stopped 기록)
+# 5. 수사관 행위 재구성 — 어떤 도구로 뭘 했는지
+python -m raidwatch artifacts /path/to/seized-pc \
+  --out case/<case_id>/artifacts --since 2026-09-19
+
+# 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
+#   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 ```
+
+## 역발상 레퍼토리
+
+| 트릭 | 커맨드 | 원리 |
+|---|---|---|
+| 종이 말고 원본을 턴다 | `sources` | 인쇄물의 디지털 원본이 스풀/Temp/휴지통에 남는다 |
+| 해시 말고 경로만 읽는다 | `verify` | 깨진 경로도 인벤토리와 퍼지 매칭 → 해시는 직접 계산 |
+| 수사관 도구의 흔적을 수거한다 | `artifacts` | prefetch/recent/evtx/hive에 어떤 툴로 뭘 했는지 남는다 |
+| 열람 흔적을 분류한다 | `diff` | atime만 이동 = 읽기만 함 → "봤지만 안 가져간" 증거 |
+| 백데이팅을 잡는다 | `diff` | 집행 중 새 파일인데 mtime이 과거 = timestomp 식재 의심 |
+| VSS를 기준선으로 쓴다 | `artifacts` | 윈도우 섀도 카피가 이미 집행 전 상태를 찍어뒀을 수 있다 |
+| 수사 프로세스를 본다 | `watch` | 패스마다 프로세스 스냅샷 → 수사 도구 등장/종료 기록 |
 
 ## 검증 시 두 가지 역발상
 

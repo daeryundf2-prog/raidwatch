@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "raidwatch"
-version = "0.2.0"
+version = "0.3.0"
 description = "Defense-side search & seizure verification toolkit: baseline inventory, warrant-profile rescan, post-raid diff, seized-list verification"
 readme = "README.md"
 requires-python = ">=3.10"

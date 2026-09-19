@@ -14,12 +14,18 @@ def _classify(before: FileRecord, after: FileRecord) -> str:
     if before.sha256 and after.sha256:
         if before.sha256 != after.sha256:
             return "content_changed"
-        if (
-            before.mtime_ns != after.mtime_ns
+        mtime_same = before.mtime_ns == after.mtime_ns
+        atime_diff = before.atime_ns != after.atime_ns
+        meta_diff = (
+            not mtime_same
             or before.ctime_ns != after.ctime_ns
-            or before.atime_ns != after.atime_ns
             or before.size != after.size
-        ):
+        )
+        if atime_diff and mtime_same:
+            # Content identical, mtime preserved, only access time moved —
+            # the file was opened/read, not modified.
+            return "accessed"
+        if meta_diff or atime_diff:
             return "metadata_changed"
         return "unchanged"
     if before.status != after.status:
@@ -43,7 +49,12 @@ def _brief(rec: FileRecord) -> dict:
     }
 
 
-def diff_inventories(baseline: Inventory, current: Inventory) -> dict:
+def diff_inventories(
+    baseline: Inventory,
+    current: Inventory,
+    *,
+    baseline_created_ns: int | None = None,
+) -> dict:
     base = {r.path: r for r in baseline.iter_records()}
     cur = {r.path: r for r in current.iter_records()}
 
@@ -53,7 +64,9 @@ def diff_inventories(baseline: Inventory, current: Inventory) -> dict:
     summary = {
         "added": 0,
         "removed": 0,
+        "backdated_added": 0,
         "content_changed": 0,
+        "accessed": 0,
         "metadata_changed": 0,
         "kind_changed": 0,
         "status_changed": 0,
@@ -67,7 +80,17 @@ def diff_inventories(baseline: Inventory, current: Inventory) -> dict:
         after = cur.get(path)
         if before is None:
             summary["added"] += 1
-            added.append({"path": path, **_brief(after)})
+            entry = {"path": path, **_brief(after)}
+            # A file that appeared during the raid window but claims an mtime
+            # older than the baseline is a timestomp/planting indicator.
+            if (
+                baseline_created_ns is not None
+                and after.kind == "file"
+                and 0 < after.mtime_ns < baseline_created_ns
+            ):
+                entry["backdated"] = True
+                summary["backdated_added"] += 1
+            added.append(entry)
             continue
         if after is None:
             summary["removed"] += 1
@@ -106,8 +129,10 @@ def render_diff_markdown(report: dict, base_root: str | None, cur_root: str | No
         "| 구분 | 건수 |",
         "|---|---|",
         f"| 추가(created) | {s['added']} |",
+        f"| └ 그중 과거로 위장된 mtime(식재 의심) | {s['backdated_added']} |",
         f"| 삭제(removed) | {s['removed']} |",
         f"| 내용 변경 | {s['content_changed']} |",
+        f"| 열람만(atime만 변경) | {s['accessed']} |",
         f"| 메타데이터만 변경(열람/접근 흔적) | {s['metadata_changed']} |",
         f"| 유형 변경 | {s['kind_changed']} |",
         f"| 변경(해시 불가) | {s['modified_unverifiable']} |",
@@ -124,15 +149,23 @@ def render_diff_markdown(report: dict, base_root: str | None, cur_root: str | No
                 detail = f"{it['class']} — before sha256 `{it['before']['sha256']}` → after `{it['after']['sha256']}`"
             else:
                 detail = f"size {it['size']}, sha256 `{it['sha256']}`"
+                if it.get("backdated"):
+                    detail += " — **mtime이 기준선 이전으로 위장됨(식재 의심)**"
             lines.append(f"| `{it['path']}` | {detail} |")
         lines.append("")
     return "\n".join(lines)
 
 
 def run_diff(baseline_db: Path, current_db: Path, out_dir: Path) -> dict:
+    from .common import iso_to_ns
+
     baseline = Inventory(baseline_db)
     current = Inventory(current_db)
-    report = diff_inventories(baseline, current)
+    created = baseline.get_meta("created_utc")
+    baseline_created_ns = iso_to_ns(created) if created else None
+    report = diff_inventories(
+        baseline, current, baseline_created_ns=baseline_created_ns
+    )
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / "diff.json", report)
     (out_dir / "report.md").write_text(

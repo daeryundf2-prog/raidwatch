@@ -167,6 +167,13 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 - 수사 과정에서 변경된 파일 목록: 메타데이터만 바뀐 것(열람), 내용이
   바뀐 것(수정 의심), 새로 생긴 것(도구 생성물 vs 식재 의심 구분 단서),
   사라진 것
+- **열람 분류**: 해시 동일 + mtime 동일 + atime만 이동 → `accessed`
+  (수정이 아니라 읽기만 한 흔적 — "봤지만 안 가져간" 증거와 연계).
+  단 Windows 기본 설정은 atime 기록이 꺼져 있을 수 있어 빈 결과일 수
+  있음을 리포트에 명시한다.
+- **백데이팅 탐지**: 집행 창에 새로 나타난 파일인데 mtime이 기준선
+  생성 시각보다 과거 → `backdated` 플래그 (timestomp로 위장된 식재
+  의심). 생성 시각(birth time)과 mtime의 모순은 위조의 고전적 단서다.
 - 수사기관 도구의 정상 산출물 패턴과 대조해 "도구 생성물"을 먼저
   분류하고 나머지를 미지 변경으로 표시
 
@@ -175,6 +182,28 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 - `out_of_scope` 항목 목록 → 삭제·폐기 요청서의 부속 목록으로 출력
 - 가선별로 반출된 복제본(참관 시 열람 가능)에서 무관 정보 분류 지원
 - 이의제기 타임라인: 언제 어떤 항목에 이의를 제기했는지 기록 관리
+
+### 4.3a 수사관 행위 재구성 (`raidwatch artifacts`)
+
+수사관의 도구는 대상 PC에 자기 흔적을 남긴다 — 그걸 수거해 "누가 무엇을
+언제 실행하고 무엇을 봤는지"를 재구성한다. 전부 읽기 전용 관찰이다.
+
+- **Prefetch + 드라이버**: `Windows/Prefetch/*.pf`, `System32/drivers` —
+  알려진 수사 도구 실행 파일(FTK Imager, EnCase, AXIOM, OUTRIDER,
+  포크레인, KAPE, MD-LIVE, DumpIt, WinPmem 등)의 실행 흔적을 식별해
+  `observed_investigator_tools`로 출력. "어떤 도구로 선별했는가"는
+  재현성 질의의 첫 질문이다.
+- **Recent items / 점프리스트 .lnk**: 집행 중 수사관이 열어본 파일의
+  링크 타깃을 문자열 추출로 복원 — "봤지만 압수하지 않은" 파일 목록의
+  단서 (참관 없이도 열람 행위 재구성).
+- **이벤트 로그 사본**: System/Security/PrintService/Kernel-PnP `.evtx`
+  수집 — 인쇄 이벤트(원본 목록의 스풀 회수와 연계), 로그 삭제(1102),
+  외장 장치 연결의 시간축 재구성 (파싱은 별도 도구).
+- **레지스트리 하이브 + setupapi.dev.log**: SYSTEM/SOFTWARE/NTUSER.DAT
+  사본 + 문자열 추출 — 수사관이 꽂은 수집용 USB 장치 시리얼 등.
+- **VSS 스냅샷 감지**: 기준선을 미리 못 찍었어도 Windows 볼륨 섀도
+  카피에 집행 이전 상태가 남아 있을 수 있다 — 존재하면 "공짜 기준선".
+  감지만 수행하고 존재 여부를 리포트.
 
 ### 4.4 리포트
 
@@ -228,11 +257,12 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 |---|---|---|
 | M1 | 기준선: 파일 열거 + 해시 + SQLite 인벤토리 + 매니페스트 | ✅ `raidwatch baseline` |
 | M2 | 프로필 기반 독립 스캔(속성 선별) + hit 목록 + 영장 해석별 분류 | ✅ `raidwatch scan` |
-| M3 | 사후 diff: 기준선 vs 재인벤토리 비교 + 변경점 분류 리포트 | ✅ `raidwatch diff` |
+| M3 | 사후 diff: 기준선 vs 재인벤토리 비교 + 변경점 분류 리포트 | ✅ `raidwatch diff` (열람 `accessed` 분류 + 백데이팅 식재 탐지) |
 | M4 | 수사기관 목록 파싱 + 해시 대조 + out_of_scope 추출 + 검증 리포트 | ✅ `raidwatch verify` (OCR 손상 경로 퍼지 매칭 포함) |
 | M4a | 원본 목록 회수: 스풀/Temp/휴지통 수집 + 문자열 추출 | ✅ `raidwatch sources` (미할당 카빙 제외) |
+| M4b | 수사관 행위 재구성: prefetch/recent/evtx/hive/VSS 감지 | ✅ `raidwatch artifacts` (evtx/hive 파싱은 수집+문자열 수준) |
 | M5 | 내용 검색(텍스트 추출/키워드)으로 선별 조건 재현 강화 | 미구현 |
-| M6 | watcher: USN/Sysmon 기반 집행 중 감시 + 종료 기록 | 🔶 `raidwatch watch` — 폴링 스냅샷 버전(포터블), USN/Sysmon 네이티브는 미구현 |
+| M6 | watcher: USN/Sysmon 기반 집행 중 감시 + 종료 기록 | 🔶 `raidwatch watch` — 폴링 스냅샷 + 프로세스 등장/종료 이벤트(포터블), USN/Sysmon 네이티브는 미구현 |
 | M7 | 폐기·환부 청구용 무관 정보 목록 + 절차 기록 패키지 | 미구현 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트

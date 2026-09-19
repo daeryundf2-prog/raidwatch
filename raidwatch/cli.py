@@ -8,6 +8,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+from .artifacts import collect_artifacts
 from .common import write_json, write_manifest
 from .db import Inventory
 from .diff import run_diff
@@ -140,6 +141,20 @@ def cmd_sources(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_artifacts(args: argparse.Namespace) -> int:
+    from .common import iso_to_ns
+
+    since_ns = iso_to_ns(args.since) if args.since else None
+    report = collect_artifacts(
+        Path(args.root).expanduser(),
+        Path(args.out).expanduser(),
+        since_ns=since_ns,
+        max_file_bytes=args.max_file_mb * 1024 * 1024,
+    )
+    _print({**report["summary"], "observed_tools": report["observed_investigator_tools"]})
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     result = run_watch(
         Path(args.root).expanduser(),
@@ -209,6 +224,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--since", help="only collect files modified after this ISO date/time")
     p.add_argument("--max-file-mb", type=int, default=50)
     p.set_defaults(func=cmd_sources)
+
+    p = sub.add_parser(
+        "artifacts",
+        help="reconstruct investigator activity (prefetch/recent/evtx/hives/VSS)",
+    )
+    p.add_argument("root")
+    p.add_argument("--out", required=True)
+    p.add_argument("--since", help="only include items modified after this ISO date/time")
+    p.add_argument("--max-file-mb", type=int, default=200)
+    p.set_defaults(func=cmd_artifacts)
 
     p = sub.add_parser("watch", help="snapshot-polling change monitor")
     p.add_argument("root")
