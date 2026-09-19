@@ -53,14 +53,37 @@ def _diff_snap(prev: dict, cur: dict) -> list[dict]:
     return events
 
 
-def _process_snapshot() -> dict[str, str]:
-    """Portable process list: {pid: command_name}.
+def _process_snapshot() -> tuple[dict[str, str], dict[str, str]]:
+    """Portable process list → ({pid: name}, {pid: command_line}).
 
     New/terminated investigator-tool processes during the raid window are
     as important as file changes — this is how tool execution is observed.
+    Windows adds command lines via CIM (best-effort): the *arguments* an
+    investigator's tool ran with are the interesting part.
     """
+    cmdlines: dict[str, str] = {}
     try:
         if platform.system() == "Windows":
+            try:
+                out = subprocess.run(
+                    [
+                        "powershell", "-NoProfile", "-Command",
+                        "Get-CimInstance Win32_Process | ForEach-Object "
+                        "{ \"$($_.ProcessId)|$($_.Name)|$($_.CommandLine)\" }",
+                    ],
+                    capture_output=True, text=True, timeout=20,
+                ).stdout
+                snap = {}
+                for line in out.splitlines():
+                    parts = line.strip().split("|", 2)
+                    if len(parts) >= 2 and parts[0].isdigit():
+                        snap[parts[0]] = parts[1]
+                        if len(parts) == 3 and parts[2]:
+                            cmdlines[parts[0]] = parts[2]
+                if snap:
+                    return snap, cmdlines
+            except (OSError, subprocess.SubprocessError):
+                pass
             out = subprocess.run(
                 ["tasklist", "/fo", "csv", "/nh"],
                 capture_output=True, text=True, timeout=15,
@@ -70,7 +93,7 @@ def _process_snapshot() -> dict[str, str]:
                 parts = line.strip().strip('"').split('","')
                 if len(parts) >= 2:
                     snap[parts[1]] = parts[0]
-            return snap
+            return snap, cmdlines
         out = subprocess.run(
             ["ps", "-eo", "pid=,comm="],
             capture_output=True, text=True, timeout=15,
@@ -80,15 +103,18 @@ def _process_snapshot() -> dict[str, str]:
             parts = line.strip().split(None, 1)
             if len(parts) == 2 and parts[0].isdigit():
                 snap[parts[0]] = parts[1]
-        return snap
+        return snap, cmdlines
     except (OSError, subprocess.SubprocessError):
-        return {}
+        return {}, cmdlines
 
 
-def _diff_procs(prev: dict, cur: dict) -> list[dict]:
+def _diff_procs(prev: dict, cur: dict, cmdlines: dict) -> list[dict]:
     events = []
     for pid in sorted(set(cur) - set(prev), key=int):
-        events.append({"event": "process_started", "pid": pid, "name": cur[pid]})
+        ev = {"event": "process_started", "pid": pid, "name": cur[pid]}
+        if pid in cmdlines:
+            ev["cmdline"] = cmdlines[pid]
+        events.append(ev)
     for pid in sorted(set(prev) - set(cur), key=int):
         events.append({"event": "process_ended", "pid": pid, "name": prev[pid]})
     return events
@@ -144,7 +170,7 @@ def run_watch(
             prev = (prev_state or {}).get("files") or {}
             prev_procs = (prev_state or {}).get("processes") or {}
             cur = snapshot_fs(root)
-            cur_procs = _process_snapshot()
+            cur_procs, cmdlines = _process_snapshot()
             ts = utc_now_iso()
             if prev_state is None:
                 append_jsonl(
@@ -157,7 +183,9 @@ def run_watch(
                     },
                 )
             else:
-                for ev in _diff_snap(prev, cur) + _diff_procs(prev_procs, cur_procs):
+                for ev in _diff_snap(prev, cur) + _diff_procs(
+                    prev_procs, cur_procs, cmdlines
+                ):
                     ev["ts"] = ts
                     append_jsonl(events_path, ev)
             write_json(

@@ -14,6 +14,7 @@ from .common import write_json, write_manifest
 from .db import Inventory
 from .diff import run_diff
 from .field import run_field
+from .harden import build_harden
 from .inventory import build_inventory
 from .journal import replay_journal
 from .mft import carve_mft
@@ -157,6 +158,7 @@ def cmd_artifacts(args: argparse.Namespace) -> int:
         Path(args.out).expanduser(),
         since_ns=since_ns,
         max_file_bytes=args.max_file_mb * 1024 * 1024,
+        use_vss=args.vss,
     )
     _print({**report["summary"], "observed_tools": report["observed_investigator_tools"]})
     return 0
@@ -234,15 +236,28 @@ def cmd_field(args: argparse.Namespace) -> int:
         Path(args.out).expanduser(),
         hash_files=not args.no_hash,
         since_ns=since_ns,
+        use_vss=args.vss,
     )
     _print(
         {
             "steps": report["steps"],
             "results_zip": report["results_zip"],
             "results_zip_sha256": report["results_zip_sha256"],
+            "custody_root_hash": report.get("custody_root_hash"),
         }
     )
     return 0
+
+
+def cmd_harden(args: argparse.Namespace) -> int:
+    _print(build_harden(Path(args.out).expanduser()))
+    return 0
+
+
+def cmd_gui(args: argparse.Namespace) -> int:
+    from .gui import run_gui
+
+    return run_gui()
 
 
 def cmd_collect(args: argparse.Namespace) -> int:
@@ -333,6 +348,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.add_argument("--since", help="only include items modified after this ISO date/time")
     p.add_argument("--max-file-mb", type=int, default=200)
+    p.add_argument(
+        "--vss",
+        action="store_true",
+        help="create a fresh VSS snapshot to reach locked files (Windows, "
+             "admin; existing shadows are always tried first, read-only)",
+    )
     p.set_defaults(func=cmd_artifacts)
 
     p = sub.add_parser("watch", help="snapshot-polling change monitor")
@@ -402,7 +423,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="seizure date/time (overrides inputs/info.*; narrows temp sources)",
     )
     p.add_argument("--no-hash", action="store_true")
+    p.add_argument(
+        "--vss",
+        action="store_true",
+        help="create a VSS snapshot for locked files (Windows, admin)",
+    )
     p.set_defaults(func=cmd_field)
+
+    p = sub.add_parser(
+        "harden",
+        help="pre-raid kit: HARDEN.bat/REVERT.bat/sysmon config that turns "
+             "on OS-native recording (USN, audit policy, PS logging)",
+    )
+    p.add_argument("--out", required=True, help="hardening kit output dir")
+    p.set_defaults(func=cmd_harden)
+
+    p = sub.add_parser("gui", help="office-side Tkinter front-end")
+    p.set_defaults(func=cmd_gui)
 
     p = sub.add_parser(
         "collect",

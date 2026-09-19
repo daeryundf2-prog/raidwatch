@@ -10,9 +10,11 @@
 
 | 시점 | 명령 | 역할 |
 |---|---|---|
-| 사전 (raid 이전) | `baseline`, `watch` | 내 PC 기준선 인벤토리+해시, 변경 감시 |
+| 사전 (raid 이전) | `baseline`, `watch`, `harden` | 기준선 인벤토리+해시, 변경 감시, OS 감사 기록 활성화 |
 | 집행 중 | `watch` (사전 설치 시) | 수사 도구 행위의 수동적 관찰 기록 |
-| 사후 | `scan`, `diff`, `verify` | 독립 재현 스캔, 전후 변경점 비교, 압수 목록 검증 |
+| 사후 | `scan`, `diff`, `verify`, `sources`, `artifacts`, `carve`, `journal` | 독립 재현, 전후 비교, 목록 검증, 원본 회수, 행위 재구성 |
+| 배포/수거 | `bundle`, `field`, `collect` | 키트 생성 → 의뢰인 PC 실행 → 산출물만 회수 |
+| 사무실 | `gui`, `package` | Tkinter 프런트엔드, 법적 검토 패키지 |
 
 ## 사용법
 
@@ -54,10 +56,19 @@ python -m raidwatch carve --mft mft-dump.bin --out case/<case_id>/carve
 # 7. USN 저널 리플레이 — 수사관이 만들고 지운 파일 이력
 python -m raidwatch journal --csv usn-export.csv \
   --out case/<case_id>/journal --since 2026-09-19
+#    Windows + 관리자면 --volume C: 로 fsutil 직접 호출도 가능
 
-# 8. 법적 검토 패키지 — 폐기청구 목록 + 절차 기록 묶음
+# 8. 법적 검토 패키지 — 폐기청구 목록 + 절차 기록 + 검토 체크리스트
 python -m raidwatch package --case case/<case_id> \
   --out case/<case_id>/package
+
+# 8a. 사전 하드닝 — OS 자체 기록을 켜두는 키트 생성
+#     HARDEN.bat(관리자): USN 저널 + 프로세스 감사+명령행 +
+#     PS 로깅 + 인쇄/장치 로그. sysmon-raidwatch.xml 동봉.
+python -m raidwatch harden --out harden-kit
+
+# 8b. 사무실용 GUI — Tkinter (exe 안에 포함됨)
+raidwatch gui
 
 # 9. 현장 배포 키트 — 의뢰인 PC로 보내서 분석 산출물만 회수
 #    (단일 exe: 대상 PC에 Python 없어도 됨 — PyInstaller로 1회 빌드)
@@ -68,6 +79,8 @@ python -m raidwatch bundle --out raidwatch-kit \
 #   → raidwatch-kit/ (raidwatch.exe + raidwatch.pyz 폴백 + inputs/
 #     + RUN.bat/RUN.sh + README)
 #   USB·메일로 전달 → 의뢰인이 RUN 실행 → raidwatch-out/ 반환
+#   (관리자로 실행하면 --vss 자동: 잠긴 hive/evtx를 스냅샷 경유로 읽음.
+#    RUN.bat D:\ \\서버\공유 → 결과 zip을 공유폴더로 바로 반송)
 
 # 10. 원격 수거 — SSH로 키트 전송·실행·결과 회수 + 해시 검증
 python -m raidwatch collect --host user@client-pc \
@@ -95,6 +108,10 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 파일 안을 들여다본다 | `scan` | `in: content` 키워드 → txt/Office/PDF/HWP까지 내용 선별 재현 |
 | 판사에게 줄 묶음을 만든다 | `package` | 범위 초과 목록+타임라인+해시 인덱스 → 폐기청구 부속 문서 |
 | 프로그램을 보내서 결과만 받는다 | `bundle`/`field`/`collect` | zipapp 단일 파일 키트 → 의뢰인 PC에서 분석 → 산출물 zip+해시만 회수 |
+| 잠긴 파일을 섀도에서 읽는다 | `artifacts --vss` | 기존 VSS(집행 전 상태!) 또는 새 스냅샷으로 잠긴 hive/evtx 복사 |
+| 은닉 스트림을 드러낸다 | `artifacts` | NTFS ADS 열거 — `file.txt:숨김:$DATA` 같은 고전적 수법 |
+| OS가 미리 다 기록하게 한다 | `harden` | 집행 전 USN/감사정책/PS로깅 활성화 → 수사관 행위가 로그로 남음 |
+| 해시 하나로 전체를 봉인한다 | `field` → custody.txt | 산출물 해시의 해시 → 즉시 이메일 발송 = 시점 고정 증거 |
 
 ## 검증 시 두 가지 역발상
 

@@ -35,6 +35,18 @@ setlocal
 cd /d "%~dp0"
 set ROOT=%~1
 if "%ROOT%"=="" set ROOT=C:\
+rem Optional return path: RUN.bat D:\ \\server\share — or set RW_DEST.
+set "DEST=%~2"
+if "%DEST%"=="" set "DEST=%RW_DEST%"
+rem Administrator → allow a VSS snapshot so locked hives/EVTX are read.
+set "VSSFLAG="
+net session >nul 2>&1
+if not errorlevel 1 (
+    set "VSSFLAG=--vss"
+    echo Running as Administrator - VSS snapshot enabled for locked files.
+) else (
+    echo Not Administrator - existing shadow copies still used if present.
+)
 
 echo ============================================
 echo  raidwatch - seizure response field kit
@@ -74,7 +86,7 @@ echo.
 echo Starting analysis. This may take a while...
 
 if exist raidwatch.exe (
-    raidwatch.exe field --root "%ROOT%" --inputs inputs --out raidwatch-out
+    raidwatch.exe field --root "%ROOT%" --inputs inputs --out raidwatch-out %VSSFLAG%
     goto :done
 )
 where py >nul 2>&1 && (set PY=py -3& goto :havepy)
@@ -85,11 +97,20 @@ echo Ask the sender for a kit built with --exe.
 pause
 exit /b 1
 :havepy
-%PY% raidwatch.pyz field --root "%ROOT%" --inputs inputs --out raidwatch-out
+%PY% raidwatch.pyz field --root "%ROOT%" --inputs inputs --out raidwatch-out %VSSFLAG%
 :done
+if not "%DEST%"=="" (
+    echo.
+    echo Copying results to %DEST% ...
+    mkdir "%DEST%" 2>nul
+    copy /y "raidwatch-out\raidwatch-results.zip" "%DEST%\" >nul && echo  - raidwatch-results.zip uploaded
+    copy /y "raidwatch-out\SHA256SUMS.txt" "%DEST%\" >nul
+    copy /y "raidwatch-out\custody.txt" "%DEST%\" >nul
+)
 echo.
 echo Done. Send the raidwatch-out folder back: it contains
 echo raidwatch-results.zip and SHA256SUMS.txt for verification.
+echo TIP: email custody.txt to counsel now — its hash timestamps the evidence set.
 pause
 endlocal
 """
@@ -273,6 +294,18 @@ seized-목록.txt 같은 이름으로 넣고 RUN.bat 을 다시 실행하면 됩
 결과물은 raidwatch-out/ 에만 생깁니다:
   - raidwatch-results.zip — 분석 산출물 전부 (보존된 증거 사본 포함)
   - SHA256SUMS.txt        — 각 산출물의 해시 (전송 무결성 검증용)
+  - custody.txt           — 증거 세트 봉인 해시. 실행 직후 이 파일을
+                            변호인/본인 이메일로 보내두면 발송 시각이
+                            "이 결과가 그 시점에 존재했다"는 독립 증거가
+                            됩니다.
+
+관리자 권한으로 실행하면 잠긴 파일(레지스트리 하이브, 사용 중 로그)을
+읽기 위해 VSS 스냅샷이 자동 사용됩니다(읽기 전용·자동 해제).
+관리자가 아니어도 기존 섀도 카피가 있으면 거기서 읽습니다.
+
+결과를 바로 공유폴더로 반송하려면:
+  RUN.bat D:\\ \\\\서버\\공유\\폴더      (두번째 인자 = 반송 위치)
+  또는  set RW_DEST=\\서버\공유\폴더  후 RUN.bat 실행
 
 주의: 이 키트는 분석 결과만 만들며, 디스크 전체를 수집·반출하지 않습니다.
 분석 대상 루트를 바꾸려면 `RUN.bat D:\\` 처럼 인자를 주세요.

@@ -24,6 +24,7 @@ from .inventory import iter_fs
 from .lnk import parse_lnk_file
 from .pfparse import parse_prefetch
 from .sources import extract_strings
+from .vss import ShadowSource
 
 # Known investigator-tool executable markers (lowercase substring → label)
 KNOWN_TOOL_MARKERS = {
@@ -138,7 +139,8 @@ def detect_shadow_copies() -> dict:
 
 
 def _copy_and_hash(
-    src: Path, dest_dir: Path, tag: str, max_bytes: int, rel: str
+    src: Path, dest_dir: Path, tag: str, max_bytes: int, rel: str,
+    shadow: ShadowSource | None = None,
 ) -> dict:
     try:
         size = src.stat().st_size
@@ -154,7 +156,59 @@ def _copy_and_hash(
         shutil.copy2(src, dest)
         return {"copied_to": str(dest), "sha256": sha256_file(src)}
     except OSError:
-        return {"copied_to": None, "sha256": None, "skipped": "copy_failed"}
+        pass
+    # Locked by the OS (live hives, in-use .evtx): existing VSS snapshots
+    # expose the same bytes read-only — and predate the raid.
+    if shadow is not None:
+        for alt in shadow.fallback_paths(src):
+            try:
+                shutil.copy2(alt, dest)
+                return {
+                    "copied_to": str(dest),
+                    "sha256": sha256_file(alt),
+                    "via_shadow": str(alt),
+                }
+            except OSError:
+                continue
+    return {"copied_to": None, "sha256": None, "skipped": "copy_failed_or_locked"}
+
+
+def _scan_ads(root: Path, out_dir: Path, *, timeout: int = 180) -> dict:
+    """Alternate Data Streams — the classic NTFS hiding spot. PowerShell
+    enumeration, capped by timeout; partial results are still evidence."""
+    if platform.system() != "Windows":
+        return {"status": "skipped", "reason": "windows_only"}
+    safe_root = str(root).replace("'", "''")
+    ps = (
+        f"Get-ChildItem -Path '{safe_root}' -Recurse -File "
+        "-ErrorAction SilentlyContinue | Get-Item -Stream * "
+        "-ErrorAction SilentlyContinue | Where-Object "
+        "{$_.Stream -ne ':$DATA'} | ForEach-Object "
+        "{\"$($_.FileName)|$($_.Stream)|$($_.Length)\"}"
+    )
+    try:
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        lines = [ln for ln in out.stdout.splitlines() if "|" in ln]
+        timed_out = False
+    except subprocess.TimeoutExpired as exc:
+        lines = [
+            ln for ln in (exc.stdout or "").splitlines() if "|" in ln
+        ] if isinstance(exc.stdout, str) else []
+        timed_out = True
+    except OSError:
+        return {"status": "skipped", "reason": "powershell_unavailable"}
+    dest = out_dir / "alternate-data-streams.txt"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {
+        "status": "partial" if timed_out else "ok",
+        "streams_found": len(lines),
+        "truncated": timed_out,
+        "list_to": str(dest),
+    }
 
 
 def collect_artifacts(
@@ -163,14 +217,22 @@ def collect_artifacts(
     *,
     since_ns: int | None = None,
     max_file_bytes: int = 200 * 1024 * 1024,
+    use_vss: bool = False,
+    ads_timeout: int = 180,
 ) -> dict:
     root = root.resolve()
     copies_dir = out_dir / "copies"
     strings_dir = out_dir / "strings"
 
+    # Existing shadows are read-only evidence we did not create; --vss
+    # opts into making a fresh one (admin only) for locked files.
+    drive = str(root)[:2] if len(str(root)) >= 2 and str(root)[1] == ":" else "C:"
+    shadow = ShadowSource(drive, allow_create=use_vss)
+
     artifacts: dict[str, list] = {}
     observed: dict[str, list] = {}
-    summary = {"scanned": 0, "matched": 0, "copied": 0, "tools_found": 0}
+    summary = {"scanned": 0, "matched": 0, "copied": 0,
+               "via_shadow": 0, "tools_found": 0}
 
     for rel, abs_path, st, kind in iter_fs(root):
         if kind != "file" or st is None:
@@ -187,8 +249,13 @@ def collect_artifacts(
             "category": category,
             "size": st.st_size,
             "mtime_utc": ns_to_iso(st.st_mtime_ns),
-            **_copy_and_hash(abs_path, copies_dir, category, max_file_bytes, rel),
+            **_copy_and_hash(
+                abs_path, copies_dir, category, max_file_bytes, rel,
+                shadow=shadow,
+            ),
         }
+        if entry.get("via_shadow"):
+            summary["via_shadow"] += 1
         if entry["copied_to"]:
             summary["copied"] += 1
 
@@ -330,11 +397,16 @@ def collect_artifacts(
 
     summary["tools_found"] = len(observed)
     vss = detect_shadow_copies()
+    vss["shadow_devices_used"] = shadow.devices
+    vss["shadow_created_by_us"] = shadow.created is not None
+    ads = _scan_ads(root, out_dir, timeout=ads_timeout)
+    shadow.cleanup()
     report = {
         "root": str(root),
         "generated_utc": utc_now_iso(),
         "summary": summary,
         "observed_investigator_tools": observed,
+        "alternate_data_streams": ads,
         "shadow_copies": vss,
         "artifacts": artifacts,
         "note": (

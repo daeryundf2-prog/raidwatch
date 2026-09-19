@@ -338,6 +338,12 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M6 | watcher: USN/Sysmon 기반 집행 중 감시 + 종료 기록 | 🔶 `raidwatch watch` — 폴링 스냅샷 + 프로세스 등장/종료 이벤트(포터블); USN은 `journal`으로 사후 커버, Sysmon/ETW 네이티브는 미구현 |
 | M7 | 폐기·환부 청구용 무관 정보 목록 + 절차 기록 패키지 | ✅ `raidwatch package` — 범위 초과/부재/백데이팅 목록 + 타임라인 + 해시 인덱스 |
 | M8 | 현장 배포·원격 수거: 키트 빌드 + 현장 파이프라인 + SSH 회수 | ✅ `raidwatch bundle`/`field`/`collect` — PyInstaller 단일 exe(대상에 Python 불필요) + pyz 폴백 + 산출물 zip + SHA256SUMS 검증 |
+| M9 | 잠금 파일 도달: 기존 VSS 섀도 경유 읽기(읽기전용) + `--vss` 신규 스냅샷(관리자, 자동 해제) | ✅ `artifacts`/`field --vss` — 라이브 hive·evtx를 GLOBALROOT 섀도 경로로 복사, `via_shadow` 기록 |
+| M10 | NTFS ADS 열거(은닉 스트림 탐지, PS, 타임아웃 캡) | ✅ `artifacts` → `alternate_data_streams` (Windows only, 부분 결과도 보존) |
+| M11 | 사전 하드닝 키트: USN 저널+프로세스 감사+명령행+PS 로깅+인쇄/장치 로그 + Sysmon 설정 + REVERT | ✅ `raidwatch harden` — HARDEN.bat/REVERT.bat/sysmon-raidwatch.xml/README 생성 |
+| M12 | 증거 봉인: 산출물 해시의 해시(root_hash) + 시점 고정 안내 | ✅ field 산출 `custody.txt` — 즉시 이메일 발송/RFC3161 안내 |
+| M13 | 사무실 GUI | ✅ `raidwatch gui` — Tkinter(exe 내장), baseline/field/bundle 버튼 |
+| M14 | 변호인 검토 체크리스트 자동 생성 | ✅ `package` → `검토체크리스트.md` (데이터 기반 항목) |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.

@@ -1246,5 +1246,86 @@ class IncrementalInventoryTests(unittest.TestCase):
             inv.close()
 
 
+class VssHelpersTests(unittest.TestCase):
+    def test_shadow_path_mapping(self) -> None:
+        from raidwatch.vss import shadow_path_for
+
+        dev = "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3"
+        self.assertEqual(
+            str(shadow_path_for(
+                Path("C:/Windows/System32/config/SYSTEM"), dev)),
+            dev + "\\Windows\\System32\\config\\SYSTEM",
+        )
+
+    def test_list_shadows_non_windows_empty(self) -> None:
+        import platform
+
+        from raidwatch.vss import list_shadows
+
+        if platform.system() == "Windows":
+            self.skipTest("posix-only assertion")
+        self.assertEqual(list_shadows(), [])
+
+
+class AdsScanTests(unittest.TestCase):
+    def test_ads_skipped_off_windows(self) -> None:
+        import platform
+
+        from raidwatch.artifacts import _scan_ads
+
+        if platform.system() == "Windows":
+            self.skipTest("posix-only assertion")
+        with tempfile.TemporaryDirectory() as td:
+            res = _scan_ads(Path(td), Path(td) / "out")
+        self.assertEqual(res["status"], "skipped")
+
+
+class HardenTests(unittest.TestCase):
+    def test_harden_writes_kit(self) -> None:
+        from raidwatch.harden import build_harden
+
+        with tempfile.TemporaryDirectory() as td:
+            res = build_harden(Path(td) / "harden")
+            self.assertEqual(
+                sorted(res["files"]),
+                ["HARDEN.bat", "README.txt", "REVERT.bat",
+                 "sysmon-raidwatch.xml"],
+            )
+            bat = (Path(td) / "harden" / "HARDEN.bat").read_text(
+                encoding="utf-8")
+            self.assertIn("createjournal", bat)
+            self.assertIn("ProcessCreationIncludeCmdLine_Enabled", bat)
+            xml = (Path(td) / "harden" / "sysmon-raidwatch.xml").read_text(
+                encoding="utf-8")
+            self.assertIn("FileCreateTime", xml)
+            self.assertTrue(
+                (Path(td) / "harden" / "manifest.json").exists())
+
+
+class FieldCustodyTests(unittest.TestCase):
+    def test_field_writes_custody_seal(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            _write(root / "a.txt", b"data")
+            inputs = Path(td) / "inputs"
+            inputs.mkdir()
+            out = Path(td) / "out"
+            from raidwatch.field import run_field
+
+            report = run_field(root, inputs, out, hash_files=False)
+            custody = out / "custody.txt"
+            self.assertTrue(custody.exists())
+            text = custody.read_text(encoding="utf-8")
+            self.assertIn("root_hash", text)
+            sums = (out / "SHA256SUMS.txt").read_text(encoding="utf-8")
+            digests = [ln.split()[0] for ln in sums.splitlines()]
+            expected = hashlib.sha256(
+                "".join(digests).encode("ascii")).hexdigest()
+            self.assertEqual(report["custody_root_hash"], expected)
+            self.assertIn(report["custody_root_hash"], text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -13,7 +13,9 @@ a = Analysis(
     pathex=[_ROOT],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    # gui.py imports tkinter lazily inside a try — force the bundling
+    # hook so the office-side GUI works inside the exe.
+    hiddenimports=["tkinter"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

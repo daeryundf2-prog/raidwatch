@@ -16,7 +16,9 @@ Design contract:
 
 from __future__ import annotations
 
+import hashlib
 import json
+import platform
 import re
 import shutil
 import zipfile
@@ -28,10 +30,12 @@ from .common import sha256_file, utc_now_iso, write_json, write_manifest
 from .db import Inventory
 from .diff import run_diff
 from .inventory import build_inventory
+from .journal import replay_journal
 from .profile import ProfileError, load_profile
 from .scan import run_scan
 from .sources import collect_sources
 from .verify import run_verify
+from .vss import is_admin
 
 RESULTS_ZIP = "raidwatch-results.zip"
 SUMS_NAME = "SHA256SUMS.txt"
@@ -142,6 +146,7 @@ def run_field(
     *,
     hash_files: bool = True,
     since_ns: int | None = None,
+    use_vss: bool = False,
 ) -> dict:
     """Run every applicable raidwatch step against root.
 
@@ -180,9 +185,28 @@ def run_field(
     _run(
         "artifacts",
         lambda: collect_artifacts(
-            root, steps_dir / "artifacts", since_ns=since_ns
+            root, steps_dir / "artifacts", since_ns=since_ns,
+            use_vss=use_vss,
         ),
     )
+
+    # USN journal replay: Windows only, fsutil needs elevation. Locked
+    # hives/EVTX are already covered by the artifacts shadow fallback;
+    # the journal adds per-file create/delete/rename history.
+    if platform.system() == "Windows":
+        drive = str(root)[:2] if len(str(root)) >= 2 and str(root)[1] == ":" else "C:"
+        if is_admin():
+            _run(
+                "journal",
+                lambda: replay_journal(
+                    steps_dir / "journal", volume=drive, since_ns=since_ns
+                ),
+            )
+        else:
+            steps.append(
+                {"step": "journal", "status": "skipped",
+                 "reason": "fsutil requires Administrator"}
+            )
 
     profile = None
     if inputs["profile"]:
@@ -200,7 +224,11 @@ def run_field(
         def _build() -> None:
             nonlocal inv
             inv = Inventory(inv_tmp, create=True)
-            build_inventory(root, inv, hash_files=hash_files)
+            build_inventory(
+                root, inv, hash_files=hash_files,
+                progress=lambda n, p: print(
+                    f"  inventory: {n} entries ({p})", flush=True),
+            )
         _run("inventory", _build)
 
     if inputs["baseline"] and inv is not None:
@@ -271,11 +299,40 @@ def run_field(
         encoding="utf-8",
     )
 
+    # Custody seal: one hash covering the whole evidence set. Sending
+    # this hash to counsel/notary *right now* anchors "these outputs
+    # existed at this time" without any trusted infrastructure.
+    root_hash = hashlib.sha256(
+        "".join(digest for digest, _ in sums).encode("ascii")
+    ).hexdigest()
+    custody_path = out_dir / "custody.txt"
+    custody_path.write_text(
+        "raidwatch custody seal\n"
+        "=====================\n"
+        f"sealed_utc:  {utc_now_iso()}\n"
+        f"zip_sha256:  {sha256_file(archive_path)}\n"
+        f"root_hash:   {root_hash}\n"
+        f"file_count:  {len(sums)}\n"
+        "\n"
+        "root_hash = sha256 of every per-file sha256 in SHA256SUMS.txt,\n"
+        "concatenated in archive order. One hash seals the whole set.\n"
+        "\n"
+        "TO ANCHOR THIS EVIDENCE SET IN TIME:\n"
+        "  - email THIS FILE (or just root_hash) to counsel / yourself now\n"
+        "  - the sent timestamp becomes independent proof these outputs\n"
+        "    existed at that moment; any later change breaks the hash\n"
+        "  - stronger: paste root_hash into a public timestamp service\n"
+        "    (e.g. an RFC3161 TSA or opentimestamps) for legal-grade proof\n",
+        encoding="utf-8",
+    )
+
     report.update(
         {
             "results_zip": str(archive_path),
             "results_zip_sha256": sha256_file(archive_path),
             "sums_file": str(sums_path),
+            "custody_file": str(custody_path),
+            "custody_root_hash": root_hash,
             "note": (
                 "Archive contains raidwatch analysis outputs and preserved "
                 "evidence copies only — never a bulk dump of the disk. Verify "
