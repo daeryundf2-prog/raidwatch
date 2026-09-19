@@ -560,6 +560,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Korean help/report text must not crash on non-Korean consoles
+    # (cp1252 etc.) — replace unencodable glyphs instead of dying.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
     args = build_parser().parse_args(argv)
     return args.func(args)
 
