@@ -58,9 +58,13 @@ python -m raidwatch package --case case/<case_id> \
   --out case/<case_id>/package
 
 # 9. 현장 배포 키트 — 의뢰인 PC로 보내서 분석 산출물만 회수
+#    (단일 exe: 대상 PC에 Python 없어도 됨 — PyInstaller로 1회 빌드)
+pyinstaller packaging/raidwatch.spec --clean --noconfirm   # Windows에서 실행
 python -m raidwatch bundle --out raidwatch-kit \
+  --exe dist/raidwatch.exe \
   --profile profile.json --seized seized-list.txt --baseline inv.db
-#   → raidwatch-kit/ (raidwatch.pyz + inputs/ + RUN.bat/RUN.sh + README)
+#   → raidwatch-kit/ (raidwatch.exe + raidwatch.pyz 폴백 + inputs/
+#     + RUN.bat/RUN.sh + README)
 #   USB·메일로 전달 → 의뢰인이 RUN 실행 → raidwatch-out/ 반환
 
 # 10. 원격 수거 — SSH로 키트 전송·실행·결과 회수 + 해시 검증

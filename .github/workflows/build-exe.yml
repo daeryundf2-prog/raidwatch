@@ -1,0 +1,52 @@
+name: build-exe
+
+# Builds the single-file raidwatch binary per platform. PyInstaller does
+# not cross-compile, so the Windows exe requires the windows runner.
+# Trigger manually (workflow_dispatch) or on version tags.
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: raidwatch.exe
+          - os: macos-latest
+            artifact: raidwatch-macos
+          - os: ubuntu-latest
+            artifact: raidwatch-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PyInstaller
+        run: pip install "pyinstaller>=6,<7"
+      - name: Build binary
+        run: pyinstaller packaging/raidwatch.spec --clean --noconfirm
+      - name: Smoke test
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            ./dist/raidwatch.exe --help > $null && echo "exe OK"
+          else
+            ./dist/raidwatch --help > /dev/null && echo "exe OK"
+          fi
+        shell: bash
+      - name: Rename artifact
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cp dist/raidwatch.exe dist/${{ matrix.artifact }}
+          else
+            cp dist/raidwatch dist/${{ matrix.artifact }}
+          fi
+        shell: bash
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}

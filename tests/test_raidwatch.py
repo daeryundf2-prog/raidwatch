@@ -866,6 +866,26 @@ class BundleFieldTests(unittest.TestCase):
             self.assertEqual(r.returncode, 0)
             self.assertIn("raidwatch", r.stdout)
 
+    def test_bundle_embeds_exe_when_given(self) -> None:
+        import json as _json
+
+        from raidwatch.bundle import build_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            fake_exe = Path(td) / "raidwatch.exe"
+            fake_exe.write_bytes(b"MZ fake binary")
+            kit = build_bundle(Path(td) / "kit", exe=fake_exe)
+            kit_dir = Path(kit["kit_dir"])
+            self.assertTrue((kit_dir / "raidwatch.exe").is_file())
+            manifest = _json.loads(
+                (kit_dir / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["exe"], "raidwatch.exe")
+            self.assertEqual(manifest["requires"], "nothing — self-contained exe")
+            # RUN.bat must prefer the exe path
+            bat = (kit_dir / "RUN.bat").read_text(encoding="utf-8")
+            self.assertIn("raidwatch.exe", bat)
+
     def test_field_runs_applicable_steps_and_archives(self) -> None:
         from raidwatch.field import run_field
 

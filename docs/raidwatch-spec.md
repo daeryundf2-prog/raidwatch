@@ -254,11 +254,13 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 의뢰인 PC에 직접 앉을 수 없는 경우, 분석 도구 자체를 보내서 **분석
 산출물만** 회수한다:
 
-- **`bundle`**: 자체 완결 키트 디렉터리 생성 — `raidwatch.pyz`
-  (stdlib-only라 zipapp 단일 파일로 실행) + `inputs/`(프로필·압수
-  목록·기준선 DB 선택적 임베드) + `RUN.bat`/`RUN.sh` + README.
-  USB·메일로 전달해 의뢰인이 더블클릭으로 실행. 대상 PC의 유일한
-  요구사항은 PATH의 Python 3.11+(py/python/python3 자동 탐지).
+- **`bundle`**: 자체 완결 키트 디렉터리 생성 — `raidwatch.exe`
+  (PyInstaller 단일 바이너리, 대상 PC에 Python 불필요 — 대부분의
+  피압수자 PC는 Python이 없으므로 사실상 필수) + `raidwatch.pyz`
+  폴백 + `inputs/`(프로필·압수 목록·기준선 DB 선택적 임베드) +
+  `RUN.bat`/`RUN.sh` + README. USB·메일로 전달해 의뢰인이 더블클릭으로
+  실행. PyInstaller는 크로스컴파일 불가 → Windows exe는 Windows에서
+  빌드(`packaging/raidwatch.spec`, CI 워크플로우 제공).
 - **`field`**: 키트 내부에서 도는 파이프라인 — inputs에 존재하는
   입력물만 감지해 sources/artifacts는 항상, scan/verify/diff는 조건
   충족 시 실행. 한 단계가 실패해도 나머지는 계속(부분 결과 보장).
@@ -269,8 +271,12 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
   → 원격 실행 → 결과 아카이브 다운로드 → SHA256SUMS 대조로 전송
   무결성 검증. 키 인증 전용(BatchMode) — 비밀번호 프롬프트에 멈추지
   않음. Windows OpenSSH·POSIX 호스트 모두 대상.
-- 한계: 대상 PC에 Python이 없으면 embeddable 배포 안내 필요(PyInstaller
-  단일 exe는 후속 과제); SSH 서버 미설치 시 수동 키트 경로만 가능.
+- 한계: Windows exe는 Windows 머신/CI에서 1회 빌드 필요(PyInstaller
+  크로스컴파일 불가 — `.github/workflows/build-exe.yml`로 windows-
+  latest 빌드 지원); exe 미포함 키트는 Python 폴백으로 동작하나 실전
+  대상 PC엔 exe 경로가 사실상 필수. SSH 서버 미설치 시 수동 키트
+  경로만 가능. PyInstaller onefile은 일부 AV에서 오탐 가능 —
+  코드서명 인증서 확보 시 권장.
 
 ## 5. 안전 및 설계 원칙
 
@@ -323,7 +329,7 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M5 | 내용 검색(텍스트 추출/키워드)으로 선별 조건 재현 강화 | ✅ `scan`에 `in: content` — txt/Office/PDF/HWP·HWPX/zip 재귀 (best-effort 추출, `extract_failed` 명시) |
 | M6 | watcher: USN/Sysmon 기반 집행 중 감시 + 종료 기록 | 🔶 `raidwatch watch` — 폴링 스냅샷 + 프로세스 등장/종료 이벤트(포터블); USN은 `journal`으로 사후 커버, Sysmon/ETW 네이티브는 미구현 |
 | M7 | 폐기·환부 청구용 무관 정보 목록 + 절차 기록 패키지 | ✅ `raidwatch package` — 범위 초과/부재/백데이팅 목록 + 타임라인 + 해시 인덱스 |
-| M8 | 현장 배포·원격 수거: 키트 빌드 + 현장 파이프라인 + SSH 회수 | ✅ `raidwatch bundle`/`field`/`collect` — pyz 키트 + 산출물 zip + SHA256SUMS 검증 (대상에 Python 3.11+ 필요, PyInstaller exe는 후속) |
+| M8 | 현장 배포·원격 수거: 키트 빌드 + 현장 파이프라인 + SSH 회수 | ✅ `raidwatch bundle`/`field`/`collect` — PyInstaller 단일 exe(대상에 Python 불필요) + pyz 폴백 + 산출물 zip + SHA256SUMS 검증 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.

@@ -4,14 +4,16 @@ Produces a self-contained directory ("the kit") that can be zipped,
 e-mailed, or put on a USB stick:
 
     raidwatch-kit/
-    ├── raidwatch.pyz     — the whole tool as one zipapp file
+    ├── raidwatch.exe     — preferred: single-file binary (if provided)
+    ├── raidwatch.pyz     — fallback: zipapp (needs Python 3.11+)
     ├── inputs/           — optional: profile.json, seized.*, baseline.db
     ├── RUN.bat / RUN.sh  — double-clickable field pipeline
     └── README.txt        — instructions for the client
 
-Requirements on the target machine: Python 3.11+ on PATH (`py`,
-`python`, or `python3`). That is the kit's only dependency — raidwatch
-itself is stdlib-only.
+Most seized PCs have no Python — build the exe once (packaging/
+raidwatch.spec via PyInstaller on the target OS) and pass --exe so
+RUN.bat never needs an interpreter. The .pyz stays as POSIX/dev
+fallback.
 """
 
 from __future__ import annotations
@@ -23,22 +25,28 @@ from pathlib import Path
 from .common import sha256_file, utc_now_iso, write_manifest
 
 PYZ_NAME = "raidwatch.pyz"
+EXE_NAME = "raidwatch.exe"
 
 _RUN_BAT = r"""@echo off
 rem raidwatch field runner — defense-side analysis kit
-rem Requires Python 3.11+ (try: py, python, python3)
+rem Prefers the bundled raidwatch.exe; falls back to Python + .pyz.
 setlocal
 cd /d "%~dp0"
 set ROOT=%~1
 if "%ROOT%"=="" set ROOT=C:\
+if exist raidwatch.exe (
+    raidwatch.exe field --root "%ROOT%" --inputs inputs --out raidwatch-out
+    goto :done
+)
 where py >nul 2>&1 && (set PY=py -3& goto :havepy)
 where python >nul 2>&1 && (set PY=python& goto :havepy)
 where python3 >nul 2>&1 && (set PY=python3& goto :havepy)
-echo Python 3.11+ not found on PATH. Install python.org build or the
-echo Windows embeddable package, then re-run this file.
+echo No raidwatch.exe and no Python 3.11+ found on PATH.
+echo Ask the sender for a kit built with --exe.
 exit /b 1
 :havepy
 %PY% raidwatch.pyz field --root "%ROOT%" --inputs inputs --out raidwatch-out
+:done
 echo.
 echo Done. Send the raidwatch-out folder back: it contains
 echo raidwatch-results.zip and SHA256SUMS.txt for verification.
@@ -50,12 +58,18 @@ _RUN_SH = """#!/bin/sh
 set -e
 cd "$(dirname "$0")"
 ROOT="${1:-/}"
-PY="$(command -v python3 || command -v python || true)"
-if [ -z "$PY" ]; then
-    echo "python3 not found on PATH" >&2
-    exit 1
+if [ -x ./raidwatch ]; then
+    ./raidwatch field --root "$ROOT" --inputs inputs --out raidwatch-out
+elif [ -x ./raidwatch.exe ]; then
+    ./raidwatch.exe field --root "$ROOT" --inputs inputs --out raidwatch-out
+else
+    PY="$(command -v python3 || command -v python || true)"
+    if [ -z "$PY" ]; then
+        echo "no bundled binary and no python3 on PATH" >&2
+        exit 1
+    fi
+    "$PY" raidwatch.pyz field --root "$ROOT" --inputs inputs --out raidwatch-out
 fi
-"$PY" raidwatch.pyz field --root "$ROOT" --inputs inputs --out raidwatch-out
 echo "Done. Return the raidwatch-out directory (raidwatch-results.zip + SHA256SUMS.txt)."
 """
 
@@ -63,7 +77,11 @@ _README = """raidwatch field kit — 압수수색 대응 분석 키트
 =============================================
 
 이 폴더를 압수 대상 PC로 옮긴 뒤 RUN.bat(윈도우) 또는 RUN.sh를 실행하면
-됩니다. 인터넷 연결·추가 설치 없이 동작합니다(Python 3.11+만 필요).
+됩니다.
+
+- raidwatch.exe 가 포함된 키트: 설치 없이 바로 실행됩니다.
+- raidwatch.pyz 만 있는 키트: Python 3.11+가 필요합니다
+  (없으면 발송자에게 exe 포함 키트를 요청하세요).
 
 실행 내용 (raidwatch field):
   - sources    압수 목록 디지털 원본 회수 (프린터 스풀/Temp/휴지통)
@@ -96,8 +114,15 @@ def build_bundle(
     profile: Path | None = None,
     seized: Path | None = None,
     baseline: Path | None = None,
+    exe: Path | None = None,
 ) -> dict:
-    """Assemble the deployable kit under out_dir. Returns a summary."""
+    """Assemble the deployable kit under out_dir. Returns a summary.
+
+    `exe` should point at a PyInstaller-built raidwatch binary for the
+    TARGET platform (Windows targets need raidwatch.exe built on
+    Windows — PyInstaller does not cross-compile). Without it the kit
+    falls back to the .pyz + a Python interpreter on the target.
+    """
     out_dir = Path(out_dir).resolve()
     package_src = Path(__file__).resolve().parent
     inputs_dir = out_dir / "inputs"
@@ -111,6 +136,13 @@ def build_bundle(
         )
     finally:
         shutil.rmtree(stage, ignore_errors=True)
+
+    exe_name = None
+    if exe is not None:
+        exe = Path(exe)
+        exe_name = EXE_NAME if exe.name.lower().endswith(".exe") else exe.name
+        shutil.copy2(exe, out_dir / exe_name)
+        (out_dir / exe_name).chmod(0o755)
 
     placed = []
     for src, dest_name in (
@@ -137,13 +169,22 @@ def build_bundle(
         {
             "pyz": PYZ_NAME,
             "pyz_sha256": sha256_file(out_dir / PYZ_NAME),
+            "exe": exe_name,
+            "exe_sha256": (
+                sha256_file(out_dir / exe_name) if exe_name else None
+            ),
             "inputs": placed,
-            "requires": "python >= 3.11 on target PATH",
+            "requires": (
+                "nothing — self-contained exe"
+                if exe_name
+                else "python >= 3.11 on target PATH"
+            ),
         },
     )
     return {
         "kit_dir": str(out_dir),
         "pyz": str(out_dir / PYZ_NAME),
+        "exe": str(out_dir / exe_name) if exe_name else None,
         "inputs": placed,
         "manifest": str(manifest),
     }

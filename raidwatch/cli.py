@@ -217,6 +217,7 @@ def cmd_bundle(args: argparse.Namespace) -> int:
         profile=Path(args.profile).expanduser() if args.profile else None,
         seized=Path(args.seized).expanduser() if args.seized else None,
         baseline=Path(args.baseline).expanduser() if args.baseline else None,
+        exe=Path(args.exe).expanduser() if args.exe else None,
     )
     _print(result)
     return 0
@@ -372,6 +373,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--profile", help="warrant profile JSON to embed")
     p.add_argument("--seized", help="seized list to embed")
     p.add_argument("--baseline", help="baseline inventory.db to embed")
+    p.add_argument(
+        "--exe",
+        help="PyInstaller-built raidwatch binary for the TARGET platform "
+             "(dist/raidwatch.exe) — makes the kit runnable without Python",
+    )
     p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser(
