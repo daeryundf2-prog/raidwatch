@@ -1722,6 +1722,16 @@ class SplitArchiveTests(unittest.TestCase):
             self.assertTrue(
                 (parts_dir / "SHA256SUMS-parts.txt").is_file())
             self.assertTrue((parts_dir / "README-parts.txt").is_file())
+            # JOIN.bat is a self-contained verifier: embedded seal
+            # hash, auto-detected parts, certutil compare, popup.
+            bat = (parts_dir / "JOIN.bat").read_text(encoding="utf-8")
+            self.assertIn('set "WANT=deadbeef"', bat)
+            self.assertIn('dir /b /on "%OUT%.???"', bat)
+            self.assertIn("certutil -hashfile", bat)
+            self.assertIn("SHA256SUMS-parts.txt", bat)
+            self.assertIn("MessageBox", bat)
+            sh = (parts_dir / "join.sh").read_text(encoding="utf-8")
+            self.assertIn("WANT=deadbeef", sh)
 
     def test_small_zip_not_split(self) -> None:
         import raidwatch.field as fld

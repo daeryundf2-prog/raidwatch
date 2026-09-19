@@ -194,24 +194,92 @@ def _maybe_split_archive(
         f"# per-part sha256 — whole-zip sha256: {zip_sha256}\n" + sums,
         encoding="utf-8",
     )
-    joined = "+".join(f'"{p["name"]}"' for p in parts)
+    # One-click receiver tool: no install needed — only Windows
+    # built-ins (copy, certutil, findstr, powershell for the popup).
+    # Double-click → reassemble → per-part verify → seal-hash compare
+    # → OK/FAIL message box.
     (parts_dir / "JOIN.bat").write_text(
         "@echo off\r\n"
+        "chcp 65001 >nul 2>&1\r\n"
         "cd /d \"%~dp0\"\r\n"
-        f"copy /b {joined} \"{RESULTS_ZIP}\"\r\n"
-        f"echo Joined {len(parts)} parts -> {RESULTS_ZIP}\r\n"
-        "certutil -hashfile \"" + RESULTS_ZIP + "\" SHA256\r\n"
-        f"echo Expected: {zip_sha256}\r\n"
+        "setlocal enabledelayedexpansion\r\n"
+        f"set \"OUT={RESULTS_ZIP}\"\r\n"
+        f"set \"WANT={zip_sha256}\"\r\n"
+        "echo ==========================================================\r\n"
+        "echo   raidwatch 결과 복원 + 검증  (설치 불필요)\r\n"
+        "echo   이 폴더에 조각 파일(.001 .002 ...)이 모두 있어야 합니다\r\n"
+        "echo ==========================================================\r\n"
+        "echo.\r\n"
+        "set \"LIST=\"\r\n"
+        "for /f \"delims=\" %%f in ('dir /b /on \"%OUT%.???\" 2^>nul') do "
+        "set \"LIST=!LIST!+\"%%f\"\"\r\n"
+        "if not defined LIST (\r\n"
+        "  echo [오류] %OUT%.001 형식의 조각 파일이 없습니다.\r\n"
+        "  echo        조각 파일들을 이 폴더에 모두 넣고 다시 실행하세요.\r\n"
+        "  goto :end\r\n"
+        ")\r\n"
+        "set \"LIST=!LIST:~1!\"\r\n"
+        "if exist \"%OUT%\" del /f /q \"%OUT%\"\r\n"
+        "copy /b %LIST% \"%OUT%\" >nul\r\n"
+        "echo [1/3] 조각 복원 완료 -^> %OUT%\r\n"
+        "set \"BAD=\"\r\n"
+        "if exist SHA256SUMS-parts.txt (\r\n"
+        "  for /f \"tokens=1,2\" %%a in (SHA256SUMS-parts.txt) do (\r\n"
+        "    echo(%%a | findstr /r \"^[0-9a-fA-F][0-9a-fA-F][0-9a-fA-F][0-9a-fA-F]\" >nul\r\n"
+        "    if not errorlevel 1 (\r\n"
+        "      if exist \"%%b\" (\r\n"
+        "        set \"PH=\"\r\n"
+        "        for /f \"delims=\" %%h in ('certutil -hashfile \"%%b\" SHA256 ^| findstr /v /c:\":\"') do set \"PH=%%h\"\r\n"
+        "        set \"PH=!PH: =!\"\r\n"
+        "        if /i not \"!PH!\"==\"%%a\" set \"BAD=!BAD! %%b\"\r\n"
+        "      ) else set \"BAD=!BAD! %%b(없음)\"\r\n"
+        "    )\r\n"
+        "  )\r\n"
+        "  echo [2/3] 조각별 해시 검증 완료\r\n"
+        ") else echo [2/3] SHA256SUMS-parts.txt 없음 - 조각별 검증 생략\r\n"
+        "set \"GOT=\"\r\n"
+        "for /f \"delims=\" %%h in ('certutil -hashfile \"%OUT%\" SHA256 ^| findstr /v /c:\":\"') do set \"GOT=%%h\"\r\n"
+        "set \"GOT=!GOT: =!\"\r\n"
+        "echo [3/3] 복원 해시: %GOT%\r\n"
+        "echo        봉인 해시: %WANT%\r\n"
+        "echo.\r\n"
+        "if /i \"%GOT%\"==\"%WANT%\" (\r\n"
+        "  echo [성공] 해시 일치 — 현장에서 봉인된 결과물과 동일합니다.\r\n"
+        "  powershell -NoProfile -Command \"Add-Type -AssemblyName System.Windows.Forms;[void][System.Windows.Forms.MessageBox]::Show('복원 완료 — 해시가 현장 봉인값과 일치합니다.','raidwatch',0,64)\" >nul 2>&1\r\n"
+        ") else (\r\n"
+        "  echo [실패] 해시 불일치 — 조각이 빠졌거나 손상/변조됐습니다.\r\n"
+        "  if defined BAD (\r\n"
+        "    echo       다시 받아야 할 조각:%BAD%\r\n"
+        "  ) else (\r\n"
+        "    echo       SHA256SUMS-parts.txt가 없어 어느 조각인지 알 수 없습니다.\r\n"
+        "    echo       보낸 사람에게 전체 재전송을 요청하세요.\r\n"
+        "  )\r\n"
+        "  powershell -NoProfile -Command \"Add-Type -AssemblyName System.Windows.Forms;[void][System.Windows.Forms.MessageBox]::Show('해시 불일치 — 검은 창의 안내를 확인하세요.','raidwatch',0,16)\" >nul 2>&1\r\n"
+        ")\r\n"
+        ":end\r\n"
+        "echo.\r\n"
         "pause\r\n",
         encoding="utf-8",
     )
     (parts_dir / "join.sh").write_text(
         "#!/bin/sh\n"
         "cd \"$(dirname \"$0\")\"\n"
-        f"cat {RESULTS_ZIP}.* > {RESULTS_ZIP}\n"
-        f"echo 'expected sha256: {zip_sha256}'\n"
-        f"sha256sum {RESULTS_ZIP} 2>/dev/null || "
-        f"shasum -a 256 {RESULTS_ZIP}\n",
+        f"OUT={RESULTS_ZIP}\n"
+        f"WANT={zip_sha256}\n"
+        "ls \"$OUT\".??? >/dev/null 2>&1 || "
+        "{ echo \"[오류] $OUT.001 형식의 조각이 없습니다.\"; exit 1; }\n"
+        "cat \"$OUT\".??? > \"$OUT\"\n"
+        "echo \"[1/2] 복원 완료 -> $OUT\"\n"
+        "GOT=$(sha256sum \"$OUT\" 2>/dev/null | awk '{print $1}')\n"
+        "[ -z \"$GOT\" ] && GOT=$(shasum -a 256 \"$OUT\" | awk '{print $1}')\n"
+        "echo \"복원 해시: $GOT\"\n"
+        "echo \"봉인 해시: $WANT\"\n"
+        "if [ \"$GOT\" = \"$WANT\" ]; then\n"
+        "  echo \"[성공] 해시 일치 — 현장 봉인 결과물과 동일합니다.\"\n"
+        "else\n"
+        "  echo \"[실패] 해시 불일치 — 조각 누락/손상/변조. 다시 받으세요.\"\n"
+        "  exit 1\n"
+        "fi\n",
         encoding="utf-8",
     )
     (parts_dir / "README-parts.txt").write_text(
@@ -222,11 +290,11 @@ def _maybe_split_archive(
         "보내는 쪽: 이 폴더의 .001 .002 ... 파일들을 이메일에 나눠 첨부\n"
         "           (한 통에 1~2개씩). SHA256SUMS-parts.txt 와 JOIN.bat\n"
         "           도 같이 보내 주세요 (작은 파일이라 한 통에 들어감).\n"
-        "받는 쪽:   조각을 전부 한 폴더에 모은 뒤 JOIN.bat 더블클릭\n"
-        "           (또는 join.sh 실행) → raidwatch-results.zip 복원\n"
-        "           → 표시되는 해시가 아래 값과 같은지 대조.\n"
-        "           raidwatch가 있으면 'raidwatch join <폴더>' 로\n"
-        "           복원+검증을 한 번에 할 수 있습니다.\n\n"
+        "받는 쪽:   아무것도 설치할 필요 없습니다. 조각 파일 + JOIN.bat\n"
+        "           + SHA256SUMS-parts.txt 를 전부 한 폴더에 모으고\n"
+        "           JOIN.bat 을 더블클릭하면 복원→조각별 검증→봉인 해시\n"
+        "           대조→성공/실패 팝업까지 자동으로 진행됩니다.\n"
+        "           (mac/linux 은 join.sh 실행)\n\n"
         f"whole-zip sha256: {zip_sha256}\n",
         encoding="utf-8",
     )
