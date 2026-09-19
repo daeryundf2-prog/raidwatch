@@ -78,10 +78,18 @@ python -m raidwatch bundle --out raidwatch-kit \
   --exe dist/raidwatch.exe \
   --profile profile.json --seized seized-list.txt --baseline inv.db
 #   → raidwatch-kit/ (raidwatch.exe + raidwatch.pyz 폴백 + inputs/
-#     + RUN.bat/RUN.sh + README)
+#     + RUN.bat/RUN.sh + README + CONFIG.txt)
 #   USB·메일로 전달 → 의뢰인이 RUN 실행 → raidwatch-out/ 반환
 #   (관리자로 실행하면 --vss 자동: 잠긴 hive/evtx를 스냅샷 경유로 읽음.
 #    RUN.bat D:\ \\서버\공유 → 결과 zip을 공유폴더로 바로 반송)
+#
+#   변호인 프리필 — 아는 답을 미리 채워 보내면 의뢰인은 더블클릭+UAC 예뿐:
+python -m raidwatch bundle --out raidwatch-kit \
+  --exe dist/raidwatch.exe \
+  --raid-date "2026-09-19 14:30" \
+  --dest "\\\사무실NAS\raidwatch\사건001" --stamp ask
+#   또는 키트 안의 CONFIG.txt를 직접 편집해도 됨 (모르는 항목은
+#   비워두면 현장에서 물어봄 — 사건번호 등)
 
 # 10. 원격 수거 — SSH로 키트 전송·실행·결과 회수 + 해시 검증
 python -m raidwatch collect --host user@client-pc \

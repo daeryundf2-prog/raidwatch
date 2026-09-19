@@ -910,6 +910,42 @@ class BundleFieldTests(unittest.TestCase):
             bat = (kit_dir / "RUN.bat").read_text(encoding="utf-8")
             self.assertIn("raidwatch.exe", bat)
 
+    def test_bundle_prefill_config(self) -> None:
+        from raidwatch.bundle import build_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            kit = build_bundle(
+                Path(td) / "kit",
+                raid_date="2026-09-19 14:30",
+                dest="\\\\nas\\share\\case001",
+                stamp="y",
+            )
+            kit_dir = Path(kit["kit_dir"])
+            cfg = (kit_dir / "CONFIG.txt").read_text(encoding="utf-8")
+            self.assertIn("raid_datetime=2026-09-19 14:30", cfg)
+            self.assertIn("dest=\\\\nas\\share\\case001", cfg)
+            self.assertIn("stamp=y", cfg)
+            # blank keys stay blank — asked on site
+            self.assertIn("notes=\n", cfg)
+            # RUN.bat loads the config and skips preset questions
+            bat = (kit_dir / "RUN.bat").read_text(encoding="utf-8")
+            self.assertIn("CFG_%%a", bat)
+            self.assertIn("CFG_raid_datetime", bat)
+            self.assertIn("SEIZEDBAKED", bat)
+            # RUN.sh parity
+            sh = (kit_dir / "RUN.sh").read_text(encoding="utf-8")
+            self.assertIn("raid_datetime", sh)
+
+    def test_bundle_baked_seized_skips_question(self) -> None:
+        from raidwatch.bundle import build_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            seized = Path(td) / "seized.txt"
+            seized.write_text("C:\\x\\a.pdf\n", encoding="utf-8")
+            kit = build_bundle(Path(td) / "kit", seized=seized)
+            kit_dir = Path(kit["kit_dir"])
+            self.assertTrue((kit_dir / "inputs" / "seized.txt").is_file())
+
     def test_field_runs_applicable_steps_and_archives(self) -> None:
         from raidwatch.field import run_field
 

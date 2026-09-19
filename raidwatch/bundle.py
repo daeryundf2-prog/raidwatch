@@ -63,13 +63,42 @@ echo  Answers below are saved with the results.
 echo  Press Enter to skip any question.
 echo ============================================
 echo.
-set /p RAIDTIME="Seizure date/time (e.g. 2026-09-19 14:30): "
-set /p SEIZED="Seized-list file (drag it here, or Enter): "
-set /p STAMP="Red stamps covering list text? (y/N): "
-set /p NOTES="Case no. / notes (or Enter): "
+rem Counsel can pre-fill answers in CONFIG.txt so the client only has
+rem to press Enter — any value left blank is asked here instead.
+if exist CONFIG.txt (
+    for /f "usebackq tokens=1,* delims== eol=#" %%a in ("CONFIG.txt") do set "CFG_%%a=%%b"
+)
+if "%DEST%"=="" if defined CFG_dest set "DEST=%CFG_dest%"
+
+set "RAIDTIME=%CFG_raid_datetime%"
+if not defined RAIDTIME set /p RAIDTIME="Seizure date/time (e.g. 2026-09-19 14:30): "
+if defined RAIDTIME echo Seizure date/time: %RAIDTIME% (preset)
+
+set "SEIZED="
+set "SEXT="
+set "SEIZEDBAKED="
+rem A list baked into inputs\ by counsel needs no asking at all.
+if exist inputs\seized.* (
+    for %%f in (inputs\seized.*) do (
+        set "SEIZED=%%f"
+        set "SEXT=%%~xf"
+    )
+    set "SEIZEDBAKED=1"
+    echo Seized list already provided: %SEIZED%
+) else (
+    set /p SEIZED="Seized-list file (drag it here, or Enter): "
+)
+
+set "STAMP=%CFG_stamp%"
+if /i "%STAMP%"=="ask" set "STAMP="
+if not defined STAMP set /p STAMP="Red stamps covering list text? (y/N): "
+
+set "NOTES=%CFG_notes%"
+if not defined NOTES set /p NOTES="Case no. / notes (or Enter): "
+
 if not exist inputs mkdir inputs
 set "SEIZED=%SEIZED:"=%"
-if not "%SEIZED%"=="" (
+if not "%SEIZED%"=="" if not defined SEIZEDBAKED (
     if exist "%SEIZED%" (
         for %%f in ("%SEIZED%") do (
             copy /y "%%~f" "inputs\seized%%~xf" >nul
@@ -127,6 +156,25 @@ pause
 endlocal
 """
 
+_CONFIG_TXT = """\
+# raidwatch kit preset answers — counsel fills what they know BEFORE
+# sending; the client just double-clicks RUN.bat and answers nothing.
+# 한 줄에 key=value 하나. # 으로 시작하는 줄과 빈 값은 무시됩니다.
+# 비워둔 항목은 RUN.bat이 현장에서 물어봅니다.
+
+# 집행(압수수색) 일시 — 변호인이 보통 아는 정보. 예: 2026-09-19 14:30
+raid_datetime=
+
+# 결과 자동 반송 경로 — 사무실 NAS/공유폴더 UNC. 예: \\\\서버\\raidwatch\\사건001
+dest=
+
+# 압수 목록에 빨간 인주 도장이 텍스트를 가리는지 — y / n / ask(현장에서 질문)
+stamp=ask
+
+# 사건번호·메모 — 모르면 비워두면 됨 (현장에서 입력하거나 건너뜀)
+notes=
+"""
+
 _RUN_SH = """#!/bin/sh
 # raidwatch field runner — defense-side analysis kit
 # Asks for seizure date/list first (all optional — Enter skips).
@@ -139,22 +187,43 @@ echo " raidwatch - seizure response field kit"
 echo " Answers are saved with the results."
 echo " Press Enter to skip any question."
 echo "============================================"
-printf "Seizure date/time (e.g. 2026-09-19 14:30): "
-read -r RAIDTIME
-printf "Seized-list file path (or Enter): "
-read -r SEIZED
-printf "Case no. / notes (or Enter): "
-read -r NOTES
+# Counsel presets from CONFIG.txt (same keys as RUN.bat).
+_cfg() { sed -n "s/^$1=//p" CONFIG.txt 2>/dev/null | head -n 1; }
+RAIDTIME="$(_cfg raid_datetime)"
+if [ -z "$RAIDTIME" ]; then
+    printf "Seizure date/time (e.g. 2026-09-19 14:30): "
+    read -r RAIDTIME
+else
+    echo "Seizure date/time: $RAIDTIME (preset)"
+fi
+SEIZED=""
+if ls inputs/seized.* >/dev/null 2>&1; then
+    SEIZED="$(ls inputs/seized.* | head -n 1)"
+    echo "Seized list already provided: $SEIZED"
+else
+    printf "Seized-list file path (or Enter): "
+    read -r SEIZED
+fi
+NOTES="$(_cfg notes)"
+if [ -z "$NOTES" ]; then
+    printf "Case no. / notes (or Enter): "
+    read -r NOTES
+fi
 mkdir -p inputs
 if [ -n "$SEIZED" ]; then
     SEIZED="${SEIZED%\\"}"; SEIZED="${SEIZED#\\"}"
-    if [ -f "$SEIZED" ]; then
-        ext="${SEIZED##*.}"
-        cp "$SEIZED" "inputs/seized.$ext"
-        echo "Seized list copied into inputs."
-    else
-        echo "WARNING: file not found - $SEIZED"
-    fi
+    case "$SEIZED" in
+        inputs/*) : ;;  # baked by counsel — already in place
+        *)
+            if [ -f "$SEIZED" ]; then
+                ext="${SEIZED##*.}"
+                cp "$SEIZED" "inputs/seized.$ext"
+                echo "Seized list copied into inputs."
+            else
+                echo "WARNING: file not found - $SEIZED"
+            fi
+            ;;
+    esac
 fi
 if [ -n "$RAIDTIME$NOTES" ]; then
     printf 'datetime: %s\\nnotes: %s\\n' "$RAIDTIME" "$NOTES" > inputs/info.txt
@@ -333,6 +402,14 @@ _README = """raidwatch field kit — 압수수색 대응 분석 키트
 기록됩니다. 압수 목록을 나중에 받았으면 inputs/ 폴더에
 seized-목록.txt 같은 이름으로 넣고 RUN.bat 을 다시 실행하면 됩니다.
 
+[발송하는 변호인용] CONFIG.txt 를 미리 채워 보내면 의뢰인은 질문에
+답할 필요 없이 RUN.bat 더블클릭 + UAC "예" 만 누르면 됩니다:
+  raid_datetime= 집행 일시   (미리 채우면 질문 생략)
+  dest=          결과 반송 공유폴더 경로 (예: \\서버\공유\사건001)
+  stamp=         인주 도장 여부 y/n/ask
+  notes=         사건번호·메모
+비워둔 항목은 현장에서 평소처럼 물어봅니다.
+
 실행 내용 (raidwatch field):
   - sources    압수 목록 디지털 원본 회수 (프린터 스풀/Temp/휴지통)
   - artifacts  수사 도구 실행 흔적 수집 (prefetch/evtx/hive/VSS)
@@ -377,6 +454,10 @@ def build_bundle(
     seized: Path | None = None,
     baseline: Path | None = None,
     exe: Path | None = None,
+    raid_date: str | None = None,
+    dest: str | None = None,
+    stamp: str | None = None,
+    notes: str | None = None,
 ) -> dict:
     """Assemble the deployable kit under out_dir. Returns a summary.
 
@@ -427,6 +508,22 @@ def build_bundle(
         _OCR_PS1, encoding="utf-8", newline="\r\n"
     )
     (out_dir / "README.txt").write_text(_README, encoding="utf-8")
+
+    # Counsel preset answers — anything left blank gets asked on-site.
+    config = _CONFIG_TXT
+    for key, value in (
+        ("raid_datetime", raid_date),
+        ("dest", dest),
+        ("stamp", stamp),
+        ("notes", notes),
+    ):
+        if value:
+            value = str(value).splitlines()[0].strip()
+            config = config.replace(f"{key}=\n", f"{key}={value}\n", 1)
+            config = config.replace(f"{key}=ask\n", f"{key}={value}\n", 1)
+    (out_dir / "CONFIG.txt").write_text(
+        config, encoding="utf-8", newline="\r\n"
+    )
 
     manifest = write_manifest(
         out_dir,

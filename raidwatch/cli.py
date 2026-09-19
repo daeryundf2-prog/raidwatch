@@ -228,6 +228,10 @@ def cmd_bundle(args: argparse.Namespace) -> int:
         seized=Path(args.seized).expanduser() if args.seized else None,
         baseline=Path(args.baseline).expanduser() if args.baseline else None,
         exe=Path(args.exe).expanduser() if args.exe else None,
+        raid_date=args.raid_date,
+        dest=args.dest,
+        stamp=args.stamp,
+        notes=args.notes,
     )
     _print(result)
     return 0
@@ -523,6 +527,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="PyInstaller-built raidwatch binary for the TARGET platform "
              "(dist/raidwatch.exe) — makes the kit runnable without Python",
     )
+    p.add_argument(
+        "--raid-date",
+        help="preset seizure date/time in CONFIG.txt — client skips "
+             "the question entirely",
+    )
+    p.add_argument(
+        "--dest",
+        help="preset result return path (e.g. \\\\server\\share) in "
+             "CONFIG.txt — results upload automatically",
+    )
+    p.add_argument(
+        "--stamp", choices=["y", "n", "ask"],
+        help="preset the red-stamp OCR question (default: ask on-site)",
+    )
+    p.add_argument("--notes", help="preset case number / notes")
     p.set_defaults(func=cmd_bundle)
 
     p = sub.add_parser(
