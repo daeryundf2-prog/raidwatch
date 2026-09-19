@@ -172,6 +172,7 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 조사실에서 1초 만에 답한다 | `inquiry` | 파일명 입력 → 범위 판정·diff 상태 즉시 출력 → 진술거부 판단 근거 |
 | 목록을 안 줘도 날짜로 잡는다 | `window` | 집행일 이후 생성·수정·열람 파일 전수 — 목록 없이도 "그날 뭘 했는지" |
 | 변호인이 답을 대신 쓴다 | `CONFIG.txt` | 키트에 프리필 → 의뢰인은 더블클릭+UAC 예뿐, 결과는 자동 반송 |
+| 결과가 커도 메일로 간다 | `field` 자동 | 결과 zip이 2GB 초과 → 지메일 첨부 단위(20MB)로 자동 분할 + JOIN.bat 복원 |
 
 ## 검증 시 두 가지 역발상
 

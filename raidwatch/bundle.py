@@ -170,13 +170,21 @@ if not "%DEST%"=="" (
     echo.
     echo Copying results to %DEST% ...
     mkdir "%DEST%" 2>nul
-    copy /y "raidwatch-out\raidwatch-results.zip" "%DEST%\" >nul && echo  - raidwatch-results.zip uploaded
+    copy /y "raidwatch-out\raidwatch-results.zip" "%DEST%\" >nul 2>&1 && echo  - raidwatch-results.zip uploaded
+    if exist "raidwatch-out\raidwatch-results-parts" (
+        mkdir "%DEST%\raidwatch-results-parts" 2>nul
+        copy /y "raidwatch-out\raidwatch-results-parts\*" "%DEST%\raidwatch-results-parts\" >nul && echo  - split result parts uploaded
+    )
     copy /y "raidwatch-out\SHA256SUMS.txt" "%DEST%\" >nul
     copy /y "raidwatch-out\custody.txt" "%DEST%\" >nul
 )
 echo.
 echo Done. Send the raidwatch-out folder back: it contains
 echo raidwatch-results.zip and SHA256SUMS.txt for verification.
+if exist "raidwatch-out\raidwatch-results-parts" (
+    echo NOTE: results were split for email — send the
+    echo raidwatch-results-parts folder, see README-parts.txt inside.
+)
 echo TIP: email custody.txt to counsel now — its hash timestamps the evidence set.
 pause
 endlocal

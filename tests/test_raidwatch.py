@@ -1687,5 +1687,53 @@ class WindowTests(unittest.TestCase):
                  / "window.json").is_file())
 
 
+class SplitArchiveTests(unittest.TestCase):
+    def test_split_and_rejoin(self) -> None:
+        import zipfile
+
+        import raidwatch.field as fld
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            zip_p = out / fld.RESULTS_ZIP
+            import os
+
+            payload = os.urandom(8000)  # incompressible → zip stays big
+            with zipfile.ZipFile(zip_p, "w", zipfile.ZIP_DEFLATED) as zf:
+                zf.writestr("big.bin", payload)
+            original = zip_p.read_bytes()
+            old_t, old_p = fld._SPLIT_THRESHOLD, fld._PART_SIZE
+            fld._SPLIT_THRESHOLD, fld._PART_SIZE = 1000, 700
+            try:
+                info = fld._maybe_split_archive(zip_p, out, "deadbeef")
+            finally:
+                fld._SPLIT_THRESHOLD, fld._PART_SIZE = old_t, old_p
+
+            self.assertIsNotNone(info)
+            self.assertFalse(zip_p.exists())  # monolith removed
+            parts_dir = out / fld.PARTS_DIR
+            blobs = sorted(
+                parts_dir.glob(f"{fld.RESULTS_ZIP}.0*"))
+            self.assertEqual(len(blobs), info["count"])
+            joined = b"".join(p.read_bytes() for p in blobs)
+            self.assertEqual(joined, original)  # lossless reassembly
+            self.assertTrue((parts_dir / "JOIN.bat").is_file())
+            self.assertTrue((parts_dir / "join.sh").is_file())
+            self.assertTrue(
+                (parts_dir / "SHA256SUMS-parts.txt").is_file())
+            self.assertTrue((parts_dir / "README-parts.txt").is_file())
+
+    def test_small_zip_not_split(self) -> None:
+        import raidwatch.field as fld
+
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td)
+            zip_p = out / fld.RESULTS_ZIP
+            zip_p.write_bytes(b"PK small")
+            info = fld._maybe_split_archive(zip_p, out, "aa")
+            self.assertIsNone(info)
+            self.assertTrue(zip_p.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

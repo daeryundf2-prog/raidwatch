@@ -357,6 +357,8 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M25 | 조사실 1초 확인기 | ✅ `raidwatch inquiry` — case 디렉터리의 verify/diff 인덱스에서 파일명·경로 조각으로 즉시 판정 출력, 대화형 또는 `-q` 단발, `--out` 시 조회 로그 보존 |
 | M26 | 변호인 프리필 키트 | ✅ 키트 내 `CONFIG.txt`(raid_datetime/dest/stamp/notes) + `bundle --raid-date/--dest/--stamp/--notes` — 프리필된 질문은 RUN.bat/RUN.sh가 건너뜀, 구워 넣은 `inputs\seized.*`도 질문 생략 |
 | M27 | 날짜만으로 집행일 행위 수집 | ✅ `raidwatch window --root --since` — 창 안 생성(btime/ctime)·수정(mtime)·열람(atime, accessed_only) 파일 전수, 메타데이터만(해시 없음), 스캔·히트 상한+truncated 기록. field는 since 있고 baseline 없을 때 자동 실행. NTFS atime 비활성 한계 명시 |
+| M28 | 클릭 입력 대화상자 | ✅ 키트 내장 `KIT-INPUT.ps1` — WinForms DateTimePicker 달력+OpenFileDialog+인주 체크박스+"모두 건너뛰기" → `inputs\answers.txt`; 프리필 부족분만 표시, WinForms 불가 시 콘솔 폴백 |
+| M29 | 결과물 분할 전송 | ✅ field: 결과 zip 2GiB 초과 시 20MiB(지메일 첨부 단위) 분할 → `raidwatch-results-parts/`(.001…+파트별 해시+`JOIN.bat`/`join.sh` 원클릭 복원+안내서), 원본 zip은 분할 후 삭제(whole-zip 해시는 custody에 보존), RUN.bat DEST 반송 시 파츠 폴더도 업로드 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.
