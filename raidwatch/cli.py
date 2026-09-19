@@ -400,6 +400,22 @@ def cmd_window(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_env(args: argparse.Namespace) -> int:
+    from .env import probe_environment
+
+    env = probe_environment(
+        Path(args.out).expanduser() if args.out else None)
+    print(json.dumps(env["os"], ensure_ascii=False, indent=2))
+    print("elevated:", env["elevated"])
+    print("volumes:", json.dumps(
+        env["volumes"], ensure_ascii=False))
+    print("capabilities:", json.dumps(
+        env["capabilities"], ensure_ascii=False))
+    for line in env["summary"]:
+        print(" -", line)
+    return 0
+
+
 def cmd_leftovers(args: argparse.Namespace) -> int:
     from .common import iso_to_ns
     from .leftover import run_leftovers
@@ -753,6 +769,14 @@ def build_parser() -> argparse.ArgumentParser:
                    "(correlates created-then-deleted signature files)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_leftovers)
+
+    p = sub.add_parser(
+        "env",
+        help="probe this machine — OS build, elevation, filesystems, "
+             "available tools → capability map every feature adapts to",
+    )
+    p.add_argument("--out", help="also write env.json here")
+    p.set_defaults(func=cmd_env)
 
     p = sub.add_parser("gui", help="office-side Tkinter front-end")
     p.set_defaults(func=cmd_gui)

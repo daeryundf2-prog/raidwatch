@@ -42,7 +42,6 @@ from .profile import ProfileError, load_profile
 from .scan import run_scan
 from .sources import collect_sources
 from .verify import run_verify
-from .vss import is_admin
 
 RESULTS_ZIP = "raidwatch-results.zip"
 SUMS_NAME = "SHA256SUMS.txt"
@@ -354,6 +353,28 @@ def run_field(
             )
             return {"status": "error"}
 
+    # Step 0: probe the machine first — OS build, elevation,
+    # filesystems, available tools. Every later step consults this
+    # capability map instead of blindly trying and failing.
+    env = {}
+    try:
+        from .env import probe_environment
+
+        env = probe_environment(steps_dir / "env")
+        caps = env["capabilities"]
+        steps.append({"step": "env", "status": "ok"})
+        for line in env["summary"]:
+            print(f"  env: {line}", flush=True)
+    except Exception as exc:
+        caps = {}
+        steps.append(
+            {"step": "env", "status": "error",
+             "error": f"{type(exc).__name__}: {exc}"}
+        )
+
+    def _cap(name: str, default: bool = True) -> bool:
+        return bool(caps.get(name, default))
+
     # Always-on reconstruction: no inputs required. The raid datetime
     # narrows temp-dir candidates to files touched after the seizure.
     _run(
@@ -364,7 +385,7 @@ def run_field(
         "artifacts",
         lambda: collect_artifacts(
             root, steps_dir / "artifacts", since_ns=since_ns,
-            use_vss=use_vss,
+            use_vss=use_vss and _cap("vss"),
         ),
     )
 
@@ -373,7 +394,7 @@ def run_field(
     # the journal adds per-file create/delete/rename history.
     if platform.system() == "Windows":
         drive = str(root)[:2] if len(str(root)) >= 2 and str(root)[1] == ":" else "C:"
-        if is_admin():
+        if _cap("usn_journal"):
             _run(
                 "journal",
                 lambda: replay_journal(
@@ -383,7 +404,8 @@ def run_field(
         else:
             steps.append(
                 {"step": "journal", "status": "skipped",
-                 "reason": "fsutil requires Administrator"}
+                 "reason": "fsutil+NTFS+Administrator required "
+                           "(see env.json capabilities)"}
             )
 
     # PC-resident mobile data (KakaoTalk DB, iTunes/SmartSwitch backups)
@@ -526,6 +548,12 @@ def run_field(
             else None
         ),
         "steps": steps,
+        "environment": {
+            "summary": env.get("summary", []),
+            "capabilities": env.get("capabilities", {}),
+            "elevated": env.get("elevated"),
+            "os": env.get("os", {}).get("system"),
+        },
     }
     write_json(steps_dir / "field-report.json", report)
 

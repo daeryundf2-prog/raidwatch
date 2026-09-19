@@ -72,65 +72,142 @@ def _filetime_to_epoch(ft: int) -> float:
 
 
 def _parse_i_file(path: Path) -> tuple[int, float, str] | None:
-    """$I metadata (Win10 format v2): size, delete-time, original path."""
+    """$I metadata — v2 (Win10+) and v1 (Vista/7/8/8.1) layouts.
+
+    v2: [ver:8=2][size:8][deltime:8][namelen:4][name UTF-16 nlen*2]
+    v1: [ver:8=1][size:8][deltime:8][name UTF-16 fixed 520 bytes]
+    """
     try:
         data = path.read_bytes()
     except OSError:
         return None
-    if len(data) < 28 or struct.unpack_from("<Q", data, 0)[0] != 2:
+    if len(data) < 28:
         return None
+    ver = struct.unpack_from("<Q", data, 0)[0]
     size = struct.unpack_from("<Q", data, 8)[0]
     del_ft = struct.unpack_from("<Q", data, 16)[0]
-    nlen = struct.unpack_from("<I", data, 24)[0]
     try:
-        name = data[28:28 + nlen * 2].decode("utf-16-le").rstrip("\x00")
+        if ver == 2:
+            nlen = struct.unpack_from("<I", data, 24)[0]
+            name = data[28:28 + nlen * 2].decode("utf-16-le")
+        elif ver == 1 and len(data) >= 544:
+            name = data[24:544].decode("utf-16-le")
+        else:
+            return None
     except (UnicodeDecodeError, struct.error):
         return None
-    return size, _filetime_to_epoch(del_ft), name
+    return size, _filetime_to_epoch(del_ft), name.rstrip("\x00")
+
+
+def _parse_info2(
+    path: Path, since_s: float, until_s: float, bin_dir: Path
+) -> list[dict]:
+    """XP/2003-era INFO2 index inside RECYCLER/RECYCLED.
+
+    Header 20 bytes, then 800-byte records:
+    [index:4][drive ASCII:4][deltime:8][size:4]
+    [name ANSI 260][name UTF-16 520]
+    Deleted content sits beside it as D<drive><index><ext> files.
+    """
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    if len(data) < 820:
+        return []
+    hits = []
+    for off in range(20, len(data) - 799, 800):
+        rec = data[off:off + 800]
+        try:
+            index = struct.unpack_from("<I", rec, 0)[0]
+            drive = rec[4:8].rstrip(b"\x00").decode("ascii", "replace")
+            del_ft = struct.unpack_from("<Q", rec, 8)[0]
+            size = struct.unpack_from("<I", rec, 16)[0]
+            uni = rec[280:800].decode(
+                "utf-16-le", "replace").rstrip("\x00")
+            ansi = rec[20:280].split(b"\x00")[0].decode(
+                "cp949", "replace")
+        except (struct.error, UnicodeDecodeError):
+            continue
+        name = uni or ansi
+        if not name or not drive:
+            continue
+        deleted = _filetime_to_epoch(del_ft)
+        if not (since_s <= deleted <= until_s):
+            continue
+        orig = f"{drive}{name}" if ":" in drive else name
+        ext = Path(orig).suffix.lower()
+        hinted = any(h in orig.lower() for h in NAME_HINTS)
+        # XP stores the deleted content as D<drv><idx><ext> beside INFO2
+        d_file = bin_dir / f"D{drive[0].lower()}{index}{ext}"
+        hits.append({
+            "category": (
+                "bin_list_or_container"
+                if (ext in LIST_EXTS | CONTAINER_EXTS or hinted)
+                else "bin_deleted"
+            ),
+            "original_path": orig,
+            "deleted_utc": deleted,
+            "size": size,
+            "i_file": str(path),
+            "format": "info2_legacy",
+            "r_file": str(d_file) if d_file.is_file() else None,
+        })
+    return hits
 
 
 def _scan_recycle_bin(
     roots: list[Path], since_s: float, until_s: float
 ) -> list[dict]:
     hits = []
+    # $Recycle.Bin (Vista+) plus XP/2003-era RECYCLER / RECYCLED.
+    bin_names = ("$Recycle.Bin", "RECYCLER", "RECYCLED")
     for root in roots:
-        rb = Path(root) / "$Recycle.Bin"
-        if not rb.is_dir():
-            continue
-        try:
-            sids = list(rb.iterdir())
-        except OSError:
-            continue
-        for sid in sids:
-            if not sid.is_dir():
+        for bin_name in bin_names:
+            rb = Path(root) / bin_name
+            if not rb.is_dir():
                 continue
             try:
-                i_files = list(sid.glob("$I*"))
+                sids = list(rb.iterdir())
             except OSError:
                 continue
-            for i_file in i_files:
-                parsed = _parse_i_file(i_file)
-                if not parsed:
+            for sid in sids:
+                if not sid.is_dir():
                     continue
-                size, deleted, orig_name = parsed
-                if not (since_s <= deleted <= until_s):
+                try:
+                    entries = list(sid.iterdir())
+                except OSError:
                     continue
-                ext = Path(orig_name).suffix.lower()
-                hinted = any(h in orig_name.lower() for h in NAME_HINTS)
-                category = (
-                    "bin_list_or_container"
-                    if (ext in LIST_EXTS | CONTAINER_EXTS or hinted)
-                    else "bin_deleted"
-                )
-                r_file = sid / ("$R" + i_file.name[2:])
-                hits.append({
-                    "category": category,
-                    "original_path": orig_name,
-                    "deleted_utc": deleted,
-                    "size": size,
-                    "i_file": str(i_file),
-                    "r_file": str(r_file) if r_file.is_file() else None,
-                })
+                for e in entries:
+                    if e.name.startswith("$I"):
+                        parsed = _parse_i_file(e)
+                        if not parsed:
+                            continue
+                        size, deleted, orig_name = parsed
+                        if not (since_s <= deleted <= until_s):
+                            continue
+                        ext = Path(orig_name).suffix.lower()
+                        hinted = any(
+                            h in orig_name.lower() for h in NAME_HINTS)
+                        r_file = sid / ("$R" + e.name[2:])
+                        hits.append({
+                            "category": (
+                                "bin_list_or_container"
+                                if (ext in LIST_EXTS | CONTAINER_EXTS
+                                    or hinted)
+                                else "bin_deleted"
+                            ),
+                            "original_path": orig_name,
+                            "deleted_utc": deleted,
+                            "size": size,
+                            "i_file": str(e),
+                            "r_file": (
+                                str(r_file) if r_file.is_file()
+                                else None),
+                        })
+                    elif e.name.upper() == "INFO2":
+                        hits.extend(
+                            _parse_info2(e, since_s, until_s, sid))
     return hits
 
 

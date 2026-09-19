@@ -1865,6 +1865,74 @@ class LeftoversTests(unittest.TestCase):
             self.assertEqual(rep["summary"]["deleted_in_window"], 1)
             self.assertIn("선별결과", rep["deleted_in_window"][0]["name"])
 
+    def test_i_file_v1_legacy(self) -> None:
+        """Vista/7/8 $I v1: fixed 520-byte UTF-16 name at offset 24."""
+        import struct
+
+        from raidwatch.leftover import _parse_i_file
+
+        with tempfile.TemporaryDirectory() as td:
+            name = "C:\\선별결과.zip"
+            nb = name.encode("utf-16-le").ljust(520, b"\x00")
+            ft = 116444736000000000 + int(1_789_866_000 * 10_000_000)
+            data = struct.pack("<QQQ", 1, 777, ft) + nb
+            p = Path(td) / "$IXYZ.zip"
+            p.write_bytes(data)
+            size, deleted, orig = _parse_i_file(p)
+            self.assertEqual(size, 777)
+            self.assertEqual(deleted, 1_789_866_000.0)
+            self.assertEqual(orig, name)
+
+    def test_info2_xp_legacy(self) -> None:
+        """XP INFO2: 20-byte header + 800-byte records, D-file content."""
+        import struct
+
+        from raidwatch.common import iso_to_ns
+        from raidwatch.leftover import run_leftovers
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td) / "C"
+            bin_dir = base / "RECYCLER" / "S-1-5-21"
+            bin_dir.mkdir(parents=True)
+            name = "선별결과.zip"
+            ft = 116444736000000000 + int(1_789_866_000 * 10_000_000)
+            rec = bytearray(800)
+            struct.pack_into("<I", rec, 0, 3)          # index
+            rec[4:8] = b"C:\\\x00"                     # drive
+            struct.pack_into("<Q", rec, 8, ft)         # deltime
+            struct.pack_into("<I", rec, 16, 4096)      # size
+            rec[20:20 + len(name)] = name.encode("cp949")
+            rec[280:280 + len(name) * 2] = name.encode("utf-16-le")
+            (bin_dir / "INFO2").write_bytes(
+                b"\x00" * 20 + bytes(rec))
+            (bin_dir / "Dc3.zip").write_bytes(b"recovered bytes")
+            rep = run_leftovers(
+                [base], Path(td) / "out",
+                since_ns=iso_to_ns("2026-09-19 10:00"),
+                until_ns=iso_to_ns("2026-12-31"),
+            )
+            self.assertEqual(rep["summary"]["recycle_bin_entries"], 1)
+            b = rep["recycle_bin"][0]
+            self.assertEqual(b["format"], "info2_legacy")
+            self.assertIn("선별결과", b["original_path"])
+            self.assertEqual(
+                (Path(td) / "out" / "files" / b["copied"]).read_bytes(),
+                b"recovered bytes",
+            )
+
+
+class EnvTests(unittest.TestCase):
+    def test_probe_environment(self) -> None:
+        from raidwatch.env import probe_environment
+
+        with tempfile.TemporaryDirectory() as td:
+            env = probe_environment(Path(td))
+            self.assertIn("capabilities", env)
+            self.assertIn("volumes", env)
+            self.assertTrue((Path(td) / "env.json").is_file())
+            self.assertIsInstance(env["elevated"], bool)
+            self.assertTrue(env["capabilities"]["window_scan"])
+
 
 if __name__ == "__main__":
     unittest.main()
