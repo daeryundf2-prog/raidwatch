@@ -355,6 +355,8 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M23 | 수사관 증거 컨테이너 해시 | ✅ `raidwatch containers` — 부착 외장매체의 .ad1/.e01/.ex01/.l01/.aff/.zip 등 탐지·해시 기록(부트 볼륨 제외, 깊이·엔트리 상한, `--max-hash-gb` 초과 시 이름/크기/mtime만 기록) — 이후 제시 해시와 다르면 증거 탄핵 |
 | M24 | 키워드 노이즈율 계측 | ✅ `raidwatch keyword-audit` — 키워드 귀속 항목 중 영장 자체 조건 불부합 비율(out_of_scope·excluded·borderline; unverifiable은 노이즈에서 제외), 무귀속 항목 별도 집계, petition 자동 반영 |
 | M25 | 조사실 1초 확인기 | ✅ `raidwatch inquiry` — case 디렉터리의 verify/diff 인덱스에서 파일명·경로 조각으로 즉시 판정 출력, 대화형 또는 `-q` 단발, `--out` 시 조회 로그 보존 |
+| M26 | 변호인 프리필 키트 | ✅ 키트 내 `CONFIG.txt`(raid_datetime/dest/stamp/notes) + `bundle --raid-date/--dest/--stamp/--notes` — 프리필된 질문은 RUN.bat/RUN.sh가 건너뜀, 구워 넣은 `inputs\seized.*`도 질문 생략 |
+| M27 | 날짜만으로 집행일 행위 수집 | ✅ `raidwatch window --root --since` — 창 안 생성(btime/ctime)·수정(mtime)·열람(atime, accessed_only) 파일 전수, 메타데이터만(해시 없음), 스캔·히트 상한+truncated 기록. field는 since 있고 baseline 없을 때 자동 실행. NTFS atime 비활성 한계 명시 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.

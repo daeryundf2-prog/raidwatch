@@ -131,6 +131,11 @@ python -m raidwatch keyword-audit --seized seized-list.txt \
 python -m raidwatch inquiry --case case/<case_id>          # 대화형
 python -m raidwatch inquiry --case case/<case_id> -q '보고서.hwp'
 
+# 19. 날짜만으로 — 압수 목록이 없어도 "그날 손댄 파일" 전부 수집
+#     생성/수정/열람 타임스탬프가 창 안에 있는 파일만 (메타데이터만, 해시 없이 빠름)
+python -m raidwatch window --root C:\ --since "2026-09-19 14:30" \
+  --out case/<case_id>/window
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -165,6 +170,8 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 수사관의 증거 파일을 먼저 해시한다 | `containers` | 외장매체의 신규 .ad1/.e01/.zip 해시 → 나중에 바꿔치기하면 탄핵 |
 | 키워드 폭탄을 숫자로 바꾼다 | `keyword-audit` | 키워드별 노이즈율 95% → 구체성·비례 원칙 위배 수치화 |
 | 조사실에서 1초 만에 답한다 | `inquiry` | 파일명 입력 → 범위 판정·diff 상태 즉시 출력 → 진술거부 판단 근거 |
+| 목록을 안 줘도 날짜로 잡는다 | `window` | 집행일 이후 생성·수정·열람 파일 전수 — 목록 없이도 "그날 뭘 했는지" |
+| 변호인이 답을 대신 쓴다 | `CONFIG.txt` | 키트에 프리필 → 의뢰인은 더블클릭+UAC 예뿐, 결과는 자동 반송 |
 
 ## 검증 시 두 가지 역발상
 

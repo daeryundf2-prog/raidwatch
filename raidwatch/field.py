@@ -30,6 +30,7 @@ from .audit import run_keyword_audit
 from .boundary import run_boundary
 from .common import sha256_file, utc_now_iso, write_json, write_manifest
 from .containers import sniff_containers
+from .window import scan_window
 from .db import Inventory
 from .diff import run_diff
 from .inventory import build_inventory
@@ -236,6 +237,20 @@ def run_field(
             steps_dir / "containers", since_ns=since_ns
         ),
     )
+
+    # Raid-window file activity: with only a date and no baseline this
+    # is THE deliverable — every file created/modified/accessed since
+    # the seizure time (metadata-only walk). A baseline+diff subsumes
+    # it, so it is skipped when one is present.
+    if since_ns is not None and not inputs["baseline"]:
+        _run(
+            "window",
+            lambda: scan_window(
+                root, steps_dir / "window", since_ns=since_ns,
+                progress=lambda n, h: print(
+                    f"  window: {n} scanned, {h} hits", flush=True),
+            ),
+        )
 
     profile = None
     if inputs["profile"]:

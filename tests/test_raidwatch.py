@@ -1626,5 +1626,49 @@ class InquiryTests(unittest.TestCase):
             self.assertIn("기록 없음", query(idx, "nothing.xyz"))
 
 
+class WindowTests(unittest.TestCase):
+    def test_window_finds_files_since_date(self) -> None:
+        import os
+        import time
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "root"
+            _write(root / "before.txt", b"old")
+            _write(root / "during.txt", b"investigator export")
+            past = 1262304000  # 2010 — clearly before the raid
+            os.utime(root / "before.txt", (past, past))
+            since_ns = int((time.time() - 3600) * 1_000_000_000)
+            from raidwatch.window import scan_window
+
+            rep = scan_window(
+                root, Path(td) / "w", since_ns=since_ns)
+            self.assertEqual(rep["summary"]["files_in_window"], 1)
+            f = rep["files"][0]
+            self.assertEqual(f["path"], "during.txt")
+            self.assertTrue(f["created_in_window"])
+            self.assertFalse(rep["summary"]["truncated"])
+
+    def test_field_date_only_runs_window(self) -> None:
+        import time
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            inputs = Path(td) / "inputs"
+            inputs.mkdir()
+            yesterday = time.strftime(
+                "%Y-%m-%d", time.gmtime(time.time() - 86400))
+            (inputs / "info.txt").write_text(
+                f"datetime: {yesterday}\n", encoding="utf-8")
+            from raidwatch.field import run_field
+
+            rep = run_field(root, inputs, Path(td) / "out")
+            steps = {s["step"]: s["status"] for s in rep["steps"]}
+            self.assertEqual(steps.get("window"), "ok")
+            self.assertTrue(
+                (Path(td) / "out" / "steps" / "window"
+                 / "window.json").is_file())
+
+
 if __name__ == "__main__":
     unittest.main()
