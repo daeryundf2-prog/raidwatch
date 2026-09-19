@@ -49,10 +49,20 @@ if not exist inputs mkdir inputs
 set "SEIZED=%SEIZED:"=%"
 if not "%SEIZED%"=="" (
     if exist "%SEIZED%" (
-        for %%f in ("%SEIZED%") do copy /y "%%~f" "inputs\seized%%~xf" >nul
+        for %%f in ("%SEIZED%") do (
+            copy /y "%%~f" "inputs\seized%%~xf" >nul
+            set "SEXT=%%~xf"
+        )
         echo Seized list copied into inputs.
     ) else (
         echo WARNING: file not found - "%SEIZED%"
+    )
+)
+rem Scanned PDFs / photos need real OCR — use Windows built-in WinRT OCR.
+if exist OCR-LIST.ps1 (
+    echo "%SEXT%" | findstr /i "pdf jpg jpeg png bmp tif" >nul && (
+        echo Running built-in Windows OCR on the seized list...
+        powershell -NoProfile -ExecutionPolicy Bypass -File OCR-LIST.ps1 -In "%SEIZED%" -Out "inputs\seized-ocr.txt" || echo OCR failed - continuing without it.
     )
 )
 if not "%RAIDTIME%%NOTES%"=="" (
@@ -117,6 +127,15 @@ if [ -n "$RAIDTIME$NOTES" ]; then
     printf 'datetime: %s\\nnotes: %s\\n' "$RAIDTIME" "$NOTES" > inputs/info.txt
     echo "Saved to inputs/info.txt"
 fi
+# Optional: OCR scanned lists/images if tesseract is installed.
+if [ -n "$SEIZED" ] && command -v tesseract >/dev/null 2>&1; then
+    case "$SEIZED" in
+        *.pdf|*.jpg|*.jpeg|*.png|*.bmp|*.tif|*.tiff)
+            echo "Running tesseract OCR on the seized list..."
+            tesseract "$SEIZED" "inputs/seized-ocr" -l kor+eng 2>/dev/null || true
+            ;;
+    esac
+fi
 echo "Starting analysis. This may take a while..."
 
 if [ -x ./raidwatch ]; then
@@ -134,6 +153,92 @@ fi
 echo "Done. Return the raidwatch-out directory (raidwatch-results.zip + SHA256SUMS.txt)."
 """
 
+_OCR_PS1 = r"""param(
+    [Parameter(Mandatory=$true)][string]$In,
+    [Parameter(Mandatory=$true)][string]$Out
+)
+# OCR-LIST.ps1 — OCR a seized-list PDF or image using Windows built-in
+# WinRT APIs (Windows.Data.Pdf renderer + Windows.Media.Ocr). No installs
+# needed on Windows 10+. Korean OCR requires the Korean language pack;
+# falls back to profile languages, then English.
+$ErrorActionPreference = "Stop"
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+
+$asTaskOp = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1'
+})[0]
+$asTaskAct = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq 'AsTask' -and $_.GetParameters().Count -eq 1 -and
+    $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncAction'
+})[0]
+
+function Await-Op($Op, $Type) {
+    $t = $asTaskOp.MakeGenericMethod($Type).Invoke($null, @($Op))
+    $t.Wait()
+    $t.Result
+}
+function Await-Act($Act) {
+    $asTaskAct.Invoke($null, @($Act)).Wait()
+}
+
+[void][Windows.Storage.StorageFile, Windows.Storage, ContentType=WindowsRuntime]
+[void][Windows.Storage.Streams.InMemoryRandomAccessStream, Windows.Storage.Streams, ContentType=WindowsRuntime]
+[void][Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType=WindowsRuntime]
+[void][Windows.Media.Ocr.OcrEngine, Windows.Media.Ocr, ContentType=WindowsRuntime]
+[void][Windows.Data.Pdf.PdfDocument, Windows.Data.Pdf, ContentType=WindowsRuntime]
+[void][Windows.Data.Pdf.PdfPageRenderOptions, Windows.Data.Pdf, ContentType=WindowsRuntime]
+[void][Windows.Globalization.Language, Windows.Globalization, ContentType=WindowsRuntime]
+
+$engine = $null
+foreach ($lang in @('ko', 'en')) {
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromLanguage(
+        (New-Object Windows.Globalization.Language $lang))
+    if ($engine) { break }
+}
+if (-not $engine) {
+    $engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+}
+if (-not $engine) { throw "no OCR engine (install a language pack with OCR)" }
+
+function Ocr-Bmp($bmp) {
+    $r = Await-Op ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
+    ($r.Lines | ForEach-Object { $_.Text }) -join "`n"
+}
+
+$resolved = (Resolve-Path $In).Path
+$ext = [IO.Path]::GetExtension($resolved).ToLowerInvariant()
+$out = @()
+
+if ($ext -eq '.pdf') {
+    $file = Await-Op ([Windows.Storage.StorageFile]::GetFileFromPathAsync($resolved)) ([Windows.Storage.StorageFile])
+    $pdf = Await-Op ([Windows.Data.Pdf.PdfDocument]::LoadFromFileAsync($file)) ([Windows.Data.Pdf.PdfDocument])
+    for ($i = 0; $i -lt $pdf.PageCount; $i++) {
+        $page = $pdf.GetPage($i)
+        $opts = New-Object Windows.Data.Pdf.PdfPageRenderOptions
+        $opts.DestinationWidth = [uint32]($page.Size.Width * 2)
+        $opts.DestinationHeight = [uint32]($page.Size.Height * 2)
+        $stream = New-Object Windows.Storage.Streams.InMemoryRandomAccessStream
+        Await-Act ($page.RenderToStreamAsync($stream, $opts))
+        $stream.Seek(0)
+        $dec = Await-Op ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+        $bmp = Await-Op ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+        $out += Ocr-Bmp $bmp
+        $stream.Dispose(); $page.Dispose()
+    }
+} else {
+    $file = Await-Op ([Windows.Storage.StorageFile]::GetFileFromPathAsync($resolved)) ([Windows.Storage.StorageFile])
+    $fs = Await-Op ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+    $dec = Await-Op ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($fs)) ([Windows.Graphics.Imaging.BitmapDecoder])
+    $bmp = Await-Op ($dec.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+    $out += Ocr-Bmp $bmp
+    $fs.Dispose()
+}
+
+($out -join "`n") | Out-File -Encoding utf8 $Out
+Write-Host "OCR complete -> $Out"
+"""
+
 _README = """raidwatch field kit — 압수수색 대응 분석 키트
 =============================================
 
@@ -147,8 +252,11 @@ _README = """raidwatch field kit — 압수수색 대응 분석 키트
 실행하면 먼저 세 가지를 물어봅니다 (전부 선택사항 — Enter로 건너뛰기):
   1. 압수수색 집행 일시  — 예: 2026-09-19 14:30, 2026년 9월 19일 오후 2시
      입력하면 그 시각 이후 만들어진 파일만 골라내는 데 씁니다.
-  2. 압수 목록 파일     — 사진/스캔 말고 텍스트(txt/csv)로 된 파일이 있으면
-     이 창에 끌어다 놓으세요. 입력한 내용과 대조 검증이 자동 실행됩니다.
+  2. 압수 목록 파일     — txt/csv/json은 바로 검증됩니다.
+     PDF는 글자를 고를 수 있는(텍스트가 살아있는) PDF면 자동 처리되고,
+     스캔/사진 PDF·jpg·png는 Windows 내장 OCR로 자동 읽기를 시도합니다
+     (Windows 10+, 한글 언어팩 있으면 한글도 인식 — 설치 불필요).
+     이 창에 파일을 끌어다 놓으면 됩니다.
   3. 사건번호/메모     — 결과물에 함께 기록됩니다.
 
 답변은 inputs/info.txt 에 저장되어 결과 zip 안의 field-report.json 에
@@ -233,6 +341,9 @@ def build_bundle(
     run_sh = out_dir / "RUN.sh"
     run_sh.write_text(_RUN_SH, encoding="utf-8")
     run_sh.chmod(0o755)
+    (out_dir / "OCR-LIST.ps1").write_text(
+        _OCR_PS1, encoding="utf-8", newline="\r\n"
+    )
     (out_dir / "README.txt").write_text(_README, encoding="utf-8")
 
     manifest = write_manifest(
@@ -246,6 +357,7 @@ def build_bundle(
                 sha256_file(out_dir / exe_name) if exe_name else None
             ),
             "inputs": placed,
+            "ocr_helper": "OCR-LIST.ps1",
             "requires": (
                 "nothing — self-contained exe"
                 if exe_name

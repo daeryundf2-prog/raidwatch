@@ -280,7 +280,7 @@ def _pdf_text(data: bytes) -> str | None:
         for arr in _PDF_TJ_RE.findall(payload):
             for s in _PDF_STR_RE.findall(arr):
                 parts.append(_pdf_unescape(s[1:-1]))
-    text = "".join(parts)
+    text = "\n".join(parts)
     return text if text.strip() else None
 
 

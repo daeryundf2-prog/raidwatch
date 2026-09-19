@@ -238,6 +238,29 @@ class VerifyTests(unittest.TestCase):
             self.assertTrue(any("fuzzy" in n for n in first["notes"]))
             inv.close()
 
+    def test_parse_seized_list_pdf_text_layer(self) -> None:
+        import zlib
+
+        with tempfile.TemporaryDirectory() as td:
+            payload = zlib.compress(
+                b"BT (docs/report.pdf) Tj ET BT (docs/notes.txt) Tj ET"
+            )
+            pdf = _write(
+                Path(td) / "seized.pdf",
+                b"%PDF-1.4\nstream\n" + payload + b"\nendstream\n",
+            )
+            items = parse_seized_list(pdf)
+            self.assertEqual(len(items), 2)
+            self.assertEqual(items[0]["rel"], "docs/report.pdf")
+
+    def test_parse_seized_list_scanned_pdf_needs_ocr(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            pdf = _write(Path(td) / "scan.pdf", b"%PDF-1.4\nstream\n" + b"\x00" * 300)
+            items = parse_seized_list(pdf)
+            self.assertEqual(len(items), 1)
+            self.assertTrue(items[0]["unparsed"])
+            self.assertIn("OCR", items[0]["raw"]["pdf"])
+
     def test_parse_seized_list_txt_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             txt = Path(td) / "list.txt"

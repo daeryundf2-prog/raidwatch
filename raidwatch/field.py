@@ -120,8 +120,13 @@ def _find_inputs(inputs_dir: Path) -> dict:
         low = p.name.lower()
         if found["profile"] is None and low.startswith("profile") and p.suffix == ".json":
             found["profile"] = p
-        elif found["seized"] is None and low.startswith("seized"):
-            found["seized"] = p
+        elif low.startswith("seized"):
+            # Prefer text/OCR'd formats over the raw PDF source — a
+            # seized.pdf kept beside a seized-ocr.txt stays as the
+            # preserved original while the text drives verification.
+            cur = found["seized"]
+            if cur is None or (cur.suffix.lower() == ".pdf" and p.suffix.lower() != ".pdf"):
+                found["seized"] = p
         elif found["baseline"] is None and low.startswith("baseline") and p.suffix == ".db":
             found["baseline"] = p
         elif low.startswith("info") and p.suffix in (".json", ".txt"):

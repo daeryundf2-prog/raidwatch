@@ -29,7 +29,8 @@ python -m raidwatch diff \
 # 3. 영장 조건으로 독립 재현 스캔
 python -m raidwatch scan /path --profile warrant-profile.json --out case/<case_id>/scan
 
-# 4. 수사기관이 교부한 선별 목록 검증 (json/csv/txt)
+# 4. 수사기관이 교부한 선별 목록 검증 (json/csv/txt/pdf)
+#    pdf는 텍스트 레이어 자동 추출 — 스캔 PDF는 키트의 OCR-LIST.ps1로 텍스트화
 python -m raidwatch verify \
   --seized seized-list.txt \
   --baseline case/<case_id>/baseline/inventory.db \

@@ -51,10 +51,27 @@ def parse_seized_list(path: Path | str) -> list[dict]:
     """Return [{claimed_path, rel, sha256, hash_algo}] from JSON/CSV/TXT
     evidence lists. Rows without a usable path are kept as
     {"claimed_path": None, "unparsed": True} so they are counted, not
-    silently dropped."""
+    silently dropped. PDFs are handled via their embedded text layer —
+    a scanned PDF with no text yields a single unparsed item telling the
+    operator OCR is needed (the kit ships OCR-LIST.ps1 for Windows)."""
     path = Path(path)
-    text = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        from .text_extract import extract_text
+
+        text = extract_text(path) or ""
+        if not text.strip():
+            return [{
+                "claimed_path": None, "rel": None, "sha256": None,
+                "hash_algo": None, "unparsed": True,
+                "raw": {
+                    "pdf": "no usable text layer — likely a scan/photo; "
+                           "run OCR-LIST.ps1 (kit) or supply OCR'd text",
+                },
+            }]
+        return _parse_text_lines(text)
+
+    text = path.read_text(encoding="utf-8", errors="replace")
 
     items: list[dict] = []
     if suffix == ".json" or text.lstrip().startswith(("[", "{")):
@@ -96,6 +113,11 @@ def parse_seized_list(path: Path | str) -> list[dict]:
             items.append(_mk_item(claimed, digest or None, algo))
         return items
 
+    return _parse_text_lines(text)
+
+
+def _parse_text_lines(text: str) -> list[dict]:
+    items: list[dict] = []
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -366,6 +388,15 @@ def run_verify(
     seized = parse_seized_list(seized_path)
     report = verify_items(seized, inv, profile=profile, current_root=current_root)
     out_dir.mkdir(parents=True, exist_ok=True)
+    is_pdf = Path(seized_path).suffix.lower() == ".pdf"
+    if is_pdf:
+        from .text_extract import extract_text
+
+        extracted = extract_text(Path(seized_path))
+        if extracted:
+            (out_dir / "seized-extracted-text.txt").write_text(
+                extracted, encoding="utf-8"
+            )
     write_json(out_dir / "verify.json", report)
     (out_dir / "report.md").write_text(
         render_verify_markdown(report, str(seized_path)), encoding="utf-8"
@@ -376,6 +407,11 @@ def run_verify(
         {
             "seized_list": str(seized_path),
             "seized_list_sha256": sha256_file(Path(seized_path)),
+            "seized_list_format": Path(seized_path).suffix.lower(),
+            "pdf_text_layer": (
+                "extracted" if is_pdf and (out_dir / "seized-extracted-text.txt").exists()
+                else None
+            ),
             "profile_sha256": profile["profile_sha256"] if profile else None,
             "summary": report["summary"],
         },
