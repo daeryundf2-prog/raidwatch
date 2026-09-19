@@ -41,7 +41,7 @@ jobs:
       - name: Rename artifact
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cp dist/raidwatch.exe dist/${{ matrix.artifact }}
+            [ "${{ matrix.artifact }}" != "raidwatch.exe" ] && cp dist/raidwatch.exe dist/${{ matrix.artifact }}
           else
             cp dist/raidwatch dist/${{ matrix.artifact }}
           fi
