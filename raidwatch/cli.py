@@ -224,11 +224,15 @@ def cmd_bundle(args: argparse.Namespace) -> int:
 
 
 def cmd_field(args: argparse.Namespace) -> int:
+    from .common import iso_to_ns
+
+    since_ns = iso_to_ns(args.since) if args.since else None
     report = run_field(
         Path(args.root).expanduser(),
         Path(args.inputs).expanduser(),
         Path(args.out).expanduser(),
         hash_files=not args.no_hash,
+        since_ns=since_ns,
     )
     _print(
         {
@@ -387,6 +391,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--root", required=True, help="analysis root on this machine")
     p.add_argument("--inputs", required=True, help="kit inputs dir (may be empty)")
     p.add_argument("--out", required=True, help="output dir for raidwatch-out")
+    p.add_argument(
+        "--since",
+        help="seizure date/time (overrides inputs/info.*; narrows temp sources)",
+    )
     p.add_argument("--no-hash", action="store_true")
     p.set_defaults(func=cmd_field)
 

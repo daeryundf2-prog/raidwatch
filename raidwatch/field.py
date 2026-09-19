@@ -17,8 +17,10 @@ Design contract:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .artifacts import collect_artifacts
@@ -34,11 +36,83 @@ from .verify import run_verify
 RESULTS_ZIP = "raidwatch-results.zip"
 SUMS_NAME = "SHA256SUMS.txt"
 
+_DT_RE = re.compile(
+    r"(\d{4})\D{0,3}(\d{1,2})\D{0,3}(\d{1,2})"
+    r"(?:\D{0,5}(\d{1,2})\D{0,3}(\d{1,2}))?"
+)
+
+
+def _parse_dt_lenient(text: str) -> int | None:
+    """Parse a user-typed raid datetime → epoch ns (LOCAL time of the
+    machine the kit runs on). Accepts ISO-ish, 2026.9.19, 2026/9/19,
+    and Korean-style '2026년 9월 19일 오후 2시 30분'. None if unclear."""
+    t = text.strip()
+    if not t:
+        return None
+    pm = bool(re.search(r"오후|pm|PM", t))
+    m = _DT_RE.search(t)
+    if m is None:
+        return None
+    year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    hour = int(m.group(4)) if m.group(4) else 0
+    minute = int(m.group(5)) if m.group(5) else 0
+    if pm and hour < 12:
+        hour += 12
+    try:
+        dt = datetime(year, month, day, hour, minute).astimezone()
+    except ValueError:
+        return None
+    return int(dt.timestamp() * 1_000_000_000)
+
+
+def _read_seizure_info(path: Path | None) -> dict:
+    """Read the kit's seizure-info file (info.json preferred, info.txt
+    written by RUN.bat/RUN.sh prompts). Tolerant of anything the user
+    typed — raw text is always preserved."""
+    info: dict = {
+        "raid_datetime": None, "raid_dt_ns": None, "notes": None,
+        "raw": None, "source": None,
+    }
+    if path is None:
+        return info
+    info["source"] = str(path)
+    try:
+        raw = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return info
+    info["raw"] = raw.strip()
+    dt_text = notes = None
+    if path.suffix.lower() == ".json":
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                dt_text = str(data.get("raid_datetime") or "")
+                notes = data.get("notes") or data.get("memo")
+        except (ValueError, TypeError):
+            dt_text = raw  # not real JSON — treat whole text as input
+    else:
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+        labeled = {}
+        for ln in lines:
+            m = re.match(r"(datetime|notes|memo|case)\s*:\s*(.*)", ln, re.I)
+            if m:
+                labeled[m.group(1).lower()] = m.group(2).strip()
+        if labeled:
+            dt_text = labeled.get("datetime")
+            notes = labeled.get("notes") or labeled.get("memo") or labeled.get("case")
+        elif lines:
+            dt_text, notes = lines[0], "\n".join(lines[1:]) or None
+        dt_text = dt_text or None
+    info["raid_datetime"] = dt_text
+    info["raid_dt_ns"] = _parse_dt_lenient(dt_text) if dt_text else None
+    info["notes"] = notes
+    return info
+
 
 def _find_inputs(inputs_dir: Path) -> dict:
     """Locate optional inputs carried by the kit."""
     found: dict[str, Path | None] = {
-        "profile": None, "seized": None, "baseline": None,
+        "profile": None, "seized": None, "baseline": None, "info": None,
     }
     if not inputs_dir.is_dir():
         return found
@@ -50,6 +124,9 @@ def _find_inputs(inputs_dir: Path) -> dict:
             found["seized"] = p
         elif found["baseline"] is None and low.startswith("baseline") and p.suffix == ".db":
             found["baseline"] = p
+        elif low.startswith("info") and p.suffix in (".json", ".txt"):
+            if found["info"] is None or p.suffix == ".json":
+                found["info"] = p
     return found
 
 
@@ -59,18 +136,24 @@ def run_field(
     out_dir: Path,
     *,
     hash_files: bool = True,
+    since_ns: int | None = None,
 ) -> dict:
     """Run every applicable raidwatch step against root.
 
     Returns the step report; side effects are confined to out_dir, which
     afterwards contains per-step outputs plus raidwatch-results.zip and
-    SHA256SUMS.txt.
+    SHA256SUMS.txt. An explicit `since_ns` overrides any raid datetime
+    the user typed into inputs/info.*.
     """
     root = root.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     steps_dir = out_dir / "steps"
     inputs = _find_inputs(inputs_dir)
     steps: list[dict] = []
+
+    info = _read_seizure_info(inputs["info"])
+    if since_ns is None:
+        since_ns = info["raid_dt_ns"]
 
     def _run(name: str, fn) -> dict:
         try:
@@ -83,9 +166,18 @@ def run_field(
             )
             return {"status": "error"}
 
-    # Always-on reconstruction: no inputs required.
-    _run("sources", lambda: collect_sources(root, steps_dir / "sources"))
-    _run("artifacts", lambda: collect_artifacts(root, steps_dir / "artifacts"))
+    # Always-on reconstruction: no inputs required. The raid datetime
+    # narrows temp-dir candidates to files touched after the seizure.
+    _run(
+        "sources",
+        lambda: collect_sources(root, steps_dir / "sources", since_ns=since_ns),
+    )
+    _run(
+        "artifacts",
+        lambda: collect_artifacts(
+            root, steps_dir / "artifacts", since_ns=since_ns
+        ),
+    )
 
     profile = None
     if inputs["profile"]:
@@ -127,6 +219,35 @@ def run_field(
     if inv is not None:
         inv.close()
 
+    # Write the run report inside steps/ so the archive itself carries
+    # the seizure info and step outcomes (not just files beside it).
+    report = {
+        "root": str(root),
+        "generated_utc": utc_now_iso(),
+        "inputs_found": {k: str(v) if v else None for k, v in inputs.items()},
+        "seizure_info": {
+            "raid_datetime": info["raid_datetime"],
+            "raid_datetime_utc": (
+                datetime.fromtimestamp(
+                    info["raid_dt_ns"] / 1_000_000_000, tz=timezone.utc
+                ).isoformat(timespec="seconds")
+                if info["raid_dt_ns"] is not None
+                else None
+            ),
+            "notes": info["notes"],
+            "raw": info["raw"],
+        },
+        "sources_since_utc": (
+            datetime.fromtimestamp(
+                since_ns / 1_000_000_000, tz=timezone.utc
+            ).isoformat(timespec="seconds")
+            if since_ns is not None
+            else None
+        ),
+        "steps": steps,
+    }
+    write_json(steps_dir / "field-report.json", report)
+
     # Results archive: every file the run produced, hashed.
     archive_path = out_dir / RESULTS_ZIP
     sums = []
@@ -145,20 +266,18 @@ def run_field(
         encoding="utf-8",
     )
 
-    report = {
-        "root": str(root),
-        "generated_utc": utc_now_iso(),
-        "inputs_found": {k: str(v) if v else None for k, v in inputs.items()},
-        "steps": steps,
-        "results_zip": str(archive_path),
-        "results_zip_sha256": sha256_file(archive_path),
-        "sums_file": str(sums_path),
-        "note": (
-            "Archive contains raidwatch analysis outputs and preserved "
-            "evidence copies only — never a bulk dump of the disk. Verify "
-            "integrity with SHA256SUMS.txt after transport."
-        ),
-    }
+    report.update(
+        {
+            "results_zip": str(archive_path),
+            "results_zip_sha256": sha256_file(archive_path),
+            "sums_file": str(sums_path),
+            "note": (
+                "Archive contains raidwatch analysis outputs and preserved "
+                "evidence copies only — never a bulk dump of the disk. Verify "
+                "integrity with SHA256SUMS.txt after transport."
+            ),
+        }
+    )
     write_json(out_dir / "field.json", report)
     write_manifest(out_dir, "field", {"steps": steps})
     return report

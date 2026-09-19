@@ -30,10 +30,39 @@ EXE_NAME = "raidwatch.exe"
 _RUN_BAT = r"""@echo off
 rem raidwatch field runner — defense-side analysis kit
 rem Prefers the bundled raidwatch.exe; falls back to Python + .pyz.
+rem Asks for seizure date/list first (all optional — Enter skips).
 setlocal
 cd /d "%~dp0"
 set ROOT=%~1
 if "%ROOT%"=="" set ROOT=C:\
+
+echo ============================================
+echo  raidwatch - seizure response field kit
+echo  Answers below are saved with the results.
+echo  Press Enter to skip any question.
+echo ============================================
+echo.
+set /p RAIDTIME="Seizure date/time (e.g. 2026-09-19 14:30): "
+set /p SEIZED="Seized-list file (drag it here, or Enter): "
+set /p NOTES="Case no. / notes (or Enter): "
+if not exist inputs mkdir inputs
+set "SEIZED=%SEIZED:"=%"
+if not "%SEIZED%"=="" (
+    if exist "%SEIZED%" (
+        for %%f in ("%SEIZED%") do copy /y "%%~f" "inputs\seized%%~xf" >nul
+        echo Seized list copied into inputs.
+    ) else (
+        echo WARNING: file not found - "%SEIZED%"
+    )
+)
+if not "%RAIDTIME%%NOTES%"=="" (
+    > inputs\info.txt echo datetime: %RAIDTIME%
+    >> inputs\info.txt echo notes: %NOTES%
+    echo Saved to inputs\info.txt
+)
+echo.
+echo Starting analysis. This may take a while...
+
 if exist raidwatch.exe (
     raidwatch.exe field --root "%ROOT%" --inputs inputs --out raidwatch-out
     goto :done
@@ -43,6 +72,7 @@ where python >nul 2>&1 && (set PY=python& goto :havepy)
 where python3 >nul 2>&1 && (set PY=python3& goto :havepy)
 echo No raidwatch.exe and no Python 3.11+ found on PATH.
 echo Ask the sender for a kit built with --exe.
+pause
 exit /b 1
 :havepy
 %PY% raidwatch.pyz field --root "%ROOT%" --inputs inputs --out raidwatch-out
@@ -50,14 +80,45 @@ exit /b 1
 echo.
 echo Done. Send the raidwatch-out folder back: it contains
 echo raidwatch-results.zip and SHA256SUMS.txt for verification.
+pause
 endlocal
 """
 
 _RUN_SH = """#!/bin/sh
 # raidwatch field runner — defense-side analysis kit
+# Asks for seizure date/list first (all optional — Enter skips).
 set -e
 cd "$(dirname "$0")"
 ROOT="${1:-/}"
+
+echo "============================================"
+echo " raidwatch - seizure response field kit"
+echo " Answers are saved with the results."
+echo " Press Enter to skip any question."
+echo "============================================"
+printf "Seizure date/time (e.g. 2026-09-19 14:30): "
+read -r RAIDTIME
+printf "Seized-list file path (or Enter): "
+read -r SEIZED
+printf "Case no. / notes (or Enter): "
+read -r NOTES
+mkdir -p inputs
+if [ -n "$SEIZED" ]; then
+    SEIZED="${SEIZED%\\"}"; SEIZED="${SEIZED#\\"}"
+    if [ -f "$SEIZED" ]; then
+        ext="${SEIZED##*.}"
+        cp "$SEIZED" "inputs/seized.$ext"
+        echo "Seized list copied into inputs."
+    else
+        echo "WARNING: file not found - $SEIZED"
+    fi
+fi
+if [ -n "$RAIDTIME$NOTES" ]; then
+    printf 'datetime: %s\\nnotes: %s\\n' "$RAIDTIME" "$NOTES" > inputs/info.txt
+    echo "Saved to inputs/info.txt"
+fi
+echo "Starting analysis. This may take a while..."
+
 if [ -x ./raidwatch ]; then
     ./raidwatch field --root "$ROOT" --inputs inputs --out raidwatch-out
 elif [ -x ./raidwatch.exe ]; then
@@ -82,6 +143,17 @@ _README = """raidwatch field kit — 압수수색 대응 분석 키트
 - raidwatch.exe 가 포함된 키트: 설치 없이 바로 실행됩니다.
 - raidwatch.pyz 만 있는 키트: Python 3.11+가 필요합니다
   (없으면 발송자에게 exe 포함 키트를 요청하세요).
+
+실행하면 먼저 세 가지를 물어봅니다 (전부 선택사항 — Enter로 건너뛰기):
+  1. 압수수색 집행 일시  — 예: 2026-09-19 14:30, 2026년 9월 19일 오후 2시
+     입력하면 그 시각 이후 만들어진 파일만 골라내는 데 씁니다.
+  2. 압수 목록 파일     — 사진/스캔 말고 텍스트(txt/csv)로 된 파일이 있으면
+     이 창에 끌어다 놓으세요. 입력한 내용과 대조 검증이 자동 실행됩니다.
+  3. 사건번호/메모     — 결과물에 함께 기록됩니다.
+
+답변은 inputs/info.txt 에 저장되어 결과 zip 안의 field-report.json 에
+기록됩니다. 압수 목록을 나중에 받았으면 inputs/ 폴더에
+seized-목록.txt 같은 이름으로 넣고 RUN.bat 을 다시 실행하면 됩니다.
 
 실행 내용 (raidwatch field):
   - sources    압수 목록 디지털 원본 회수 (프린터 스풀/Temp/휴지통)

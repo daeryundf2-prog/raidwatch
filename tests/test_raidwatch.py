@@ -5,6 +5,7 @@ import os
 import struct
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 from raidwatch.artifacts import collect_artifacts
@@ -936,6 +937,67 @@ class BundleFieldTests(unittest.TestCase):
             self.assertEqual(steps["artifacts"], "ok")
             self.assertNotIn("scan", steps)
             self.assertNotIn("verify", steps)
+
+    def test_field_records_seizure_info_and_uses_since(self) -> None:
+        import zipfile
+
+        from raidwatch.field import run_field
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            # one temp candidate older than the raid, one newer
+            old_tmp = root / "Users" / "u" / "AppData" / "Local" / "Temp" / "old-report.csv"
+            new_tmp = root / "Users" / "u" / "AppData" / "Local" / "Temp" / "new-list.csv"
+            _write(old_tmp, b"old")
+            _write(new_tmp, b"new")
+            raid_ns = int(datetime(2026, 9, 19, 14, 0).astimezone().timestamp() * 1e9)
+            import os
+
+            os.utime(old_tmp, ns=(raid_ns - 10**12, raid_ns - 10**12))
+            os.utime(new_tmp, ns=(raid_ns + 10**12, raid_ns + 10**12))
+
+            inputs = Path(td) / "inputs"
+            inputs.mkdir()
+            (inputs / "info.txt").write_text(
+                "datetime: 2026-09-19 14:00\nnotes: case-123\n", encoding="utf-8"
+            )
+            report = run_field(root, inputs, Path(td) / "out")
+            info = report["seizure_info"]
+            self.assertEqual(info["raid_datetime"], "2026-09-19 14:00")
+            self.assertEqual(info["notes"], "case-123")
+            self.assertIsNotNone(info["raid_datetime_utc"])
+            # 14:30 local → since filter: old temp file excluded, new included
+            src_items = json.loads(
+                (Path(td) / "out" / "steps" / "sources" / "sources.json").read_text()
+            )["items"]
+            names = {Path(i["path"]).name for i in src_items}
+            self.assertIn("new-list.csv", names)
+            self.assertNotIn("old-report.csv", names)
+            # the archive itself carries the run report
+            with zipfile.ZipFile(Path(td) / "out" / "raidwatch-results.zip") as zf:
+                fr = json.loads(zf.read("steps/field-report.json"))
+            self.assertEqual(fr["seizure_info"]["notes"], "case-123")
+
+    def test_field_parses_korean_datetime_and_json_info(self) -> None:
+        from raidwatch.field import _parse_dt_lenient, _read_seizure_info
+
+        ns = _parse_dt_lenient("2026년 9월 19일 오후 2시 30분")
+        self.assertIsNotNone(ns)
+        local = datetime.fromtimestamp(ns / 1e9).astimezone()
+        self.assertEqual((local.year, local.month, local.day, local.hour, local.minute),
+                         (2026, 9, 19, 14, 30))
+        self.assertIsNone(_parse_dt_lenient("모름"))
+        self.assertIsNone(_parse_dt_lenient(""))
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "info.json"
+            p.write_text(
+                json.dumps({"raid_datetime": "2026-09-19T14:30", "notes": "n"}),
+                encoding="utf-8",
+            )
+            info = _read_seizure_info(p)
+            self.assertIsNotNone(info["raid_dt_ns"])
+            self.assertEqual(info["notes"], "n")
 
 
 if __name__ == "__main__":
