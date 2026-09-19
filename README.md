@@ -87,6 +87,24 @@ python -m raidwatch collect --host user@client-pc \
   --kit raidwatch-kit --out case/<case_id>/collected \
   --remote-root 'C:\'
 
+# 11. 맞복사 — 수사관이 가져간 파일 세트를 우리도 똑같이
+#     verify 결과 또는 원본 목록에서 경로 해석 → 외장 SSD로 구조 보존 복사
+python -m raidwatch mirror --root C:\ \
+  --verify case/<case_id>/verify/verify.json --out E:\Seized_Mirror
+python -m raidwatch mirror --root C:\ \
+  --seized seized-list.pdf --out E:\Seized_Mirror   # 목록 → 즉시 해석·복사
+
+# 12. 인쇄 서면 — 검증 데이터 → A4 환부·폐기 청구서 HTML
+python -m raidwatch petition --case case/<case_id> \
+  --case-no 2026고단1234 --suspect 홍길동 --counsel 김변호 \
+  --agency 서울중앙지방검찰청 --out case/<case_id>/petition
+
+# 13. BitLocker 긴급 보존 — 전원 차단/재부팅 전에 복구키 확보 (관리자)
+python -m raidwatch lockbox --out case/<case_id>/lockbox
+
+# 14. PC 잔존 모바일 데이터 — 카톡 PC DB·iTunes/SmartSwitch 백업 보존
+python -m raidwatch mobile C:\ --out case/<case_id>/mobile
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -112,6 +130,11 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 은닉 스트림을 드러낸다 | `artifacts` | NTFS ADS 열거 — `file.txt:숨김:$DATA` 같은 고전적 수법 |
 | OS가 미리 다 기록하게 한다 | `harden` | 집행 전 USN/감사정책/PS로깅 활성화 → 수사관 행위가 로그로 남음 |
 | 해시 하나로 전체를 봉인한다 | `field` → custody.txt | 산출물 해시의 해시 → 즉시 이메일 발송 = 시점 고정 증거 |
+| 수사관이 가져간 걸 똑같이 가져온다 | `mirror` | verify/목록 기준 맞복사 — 구조 보존 + 우리 해시로 독립 기록 |
+| 도장 밑 글자를 읽는다 | OCR `-RemoveRedStamps` | 인주(빨간 도장) 잉크를 지우고 OCR → 인식률 회복 |
+| 서면을 바로 뽑는다 | `petition` | 검증 데이터 → A4 인쇄 최적화 환부·폐기 청구서 HTML |
+| 전원이 꺼지기 전에 키를 뺀다 | `lockbox` | BitLocker 복구키+볼륨맵 긴급 보존 — 재부팅=영구 잠금 방지 |
+| 폰은 가져가도 DB는 남는다 | `mobile` | 카톡 PC DB·iTunes/SmartSwitch 백업·데스크톱 메신저 보존 |
 
 ## 검증 시 두 가지 역발상
 

@@ -17,8 +17,12 @@ from .field import run_field
 from .harden import build_harden
 from .inventory import build_inventory
 from .journal import replay_journal
+from .lockbox import run_lockbox
 from .mft import carve_mft
+from .mirror import run_mirror
+from .mobile import collect_mobile
 from .package import build_package
+from .petition import run_petition
 from .profile import ProfileError, load_profile
 from .remote import collect_remote
 from .scan import run_scan
@@ -249,6 +253,59 @@ def cmd_field(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_mirror(args: argparse.Namespace) -> int:
+    try:
+        report = run_mirror(
+            Path(args.root).expanduser(),
+            Path(args.out).expanduser(),
+            verify_path=Path(args.verify).expanduser() if args.verify else None,
+            seized_path=Path(args.seized).expanduser() if args.seized else None,
+            max_file_mb=args.max_file_mb,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"mirror error: {exc}", file=sys.stderr)
+        return 2
+    _print(report["summary"])
+    return 0
+
+
+def cmd_petition(args: argparse.Namespace) -> int:
+    report = run_petition(
+        Path(args.case).expanduser(),
+        Path(args.out).expanduser(),
+        case_no=args.case_no,
+        suspect=args.suspect,
+        counsel=args.counsel,
+        agency=args.agency,
+    )
+    _print({"petition": report["petition"], "items_listed": report["items_listed"]})
+    return 0
+
+
+def cmd_lockbox(args: argparse.Namespace) -> int:
+    report = run_lockbox(
+        Path(args.root).expanduser() if args.root else None,
+        Path(args.out).expanduser(),
+    )
+    _print({
+        "status": report["status"],
+        "volumes": sorted(report.get("volumes", {})),
+        "sensitive": report.get("sensitive"),
+        "recovery_keys_file": report.get("recovery_keys_file"),
+    })
+    return 0
+
+
+def cmd_mobile(args: argparse.Namespace) -> int:
+    report = collect_mobile(
+        Path(args.root).expanduser(),
+        Path(args.out).expanduser(),
+        max_file_bytes=args.max_file_mb * 1024 * 1024,
+    )
+    _print({**report["summary"], "targets": report["targets_found"]})
+    return 0
+
+
 def cmd_harden(args: argparse.Namespace) -> int:
     _print(build_harden(Path(args.out).expanduser()))
     return 0
@@ -437,6 +494,52 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--out", required=True, help="hardening kit output dir")
     p.set_defaults(func=cmd_harden)
+
+    p = sub.add_parser(
+        "mirror",
+        help="copy the exact seized file set (what investigators took) "
+             "to an external drive, preserving structure + hashing",
+    )
+    p.add_argument("--root", required=True, help="filesystem root to copy from")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--verify", help="verify.json with resolved matches")
+    src.add_argument("--seized", help="raw seized list — resolved on the fly")
+    p.add_argument("--out", required=True, help="destination (external SSD)")
+    p.add_argument("--max-file-mb", type=int, default=0,
+                   help="per-file cap; 0 = unlimited (default)")
+    p.set_defaults(func=cmd_mirror)
+
+    p = sub.add_parser(
+        "petition",
+        help="print-ready 환부·폐기 청구서 HTML from case outputs",
+    )
+    p.add_argument("--case", required=True, help="case dir holding raidwatch outputs")
+    p.add_argument("--out", required=True)
+    p.add_argument("--case-no", help="사건번호")
+    p.add_argument("--suspect", help="피압수자 성명")
+    p.add_argument("--counsel", help="변호인 성명")
+    p.add_argument("--agency", help="집행기관 (e.g. ○○지방검찰청)")
+    p.set_defaults(func=cmd_petition)
+
+    p = sub.add_parser(
+        "lockbox",
+        help="extract BitLocker recovery keys + volume map before power-off "
+             "(Windows; admin for key protectors)",
+    )
+    p.add_argument("--root", help="unused — volumes are auto-detected")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_lockbox)
+
+    for name in ("mobile", "pc-mobile"):
+        p = sub.add_parser(
+            name,
+            help="preserve PC-resident mobile data (KakaoTalk DB, "
+                 "iTunes/SmartSwitch backups, desktop messenger state)",
+        )
+        p.add_argument("root")
+        p.add_argument("--out", required=True)
+        p.add_argument("--max-file-mb", type=int, default=2048)
+        p.set_defaults(func=cmd_mobile)
 
     p = sub.add_parser("gui", help="office-side Tkinter front-end")
     p.set_defaults(func=cmd_gui)

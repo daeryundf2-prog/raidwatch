@@ -56,6 +56,7 @@ echo ============================================
 echo.
 set /p RAIDTIME="Seizure date/time (e.g. 2026-09-19 14:30): "
 set /p SEIZED="Seized-list file (drag it here, or Enter): "
+set /p STAMP="Red stamps covering list text? (y/N): "
 set /p NOTES="Case no. / notes (or Enter): "
 if not exist inputs mkdir inputs
 set "SEIZED=%SEIZED:"=%"
@@ -71,10 +72,12 @@ if not "%SEIZED%"=="" (
     )
 )
 rem Scanned PDFs / photos need real OCR — use Windows built-in WinRT OCR.
+set "OCRFLAG="
+if /i "%STAMP%"=="y" set "OCRFLAG=-RemoveRedStamps"
 if exist OCR-LIST.ps1 (
     echo "%SEXT%" | findstr /i "pdf jpg jpeg png bmp tif" >nul && (
         echo Running built-in Windows OCR on the seized list...
-        powershell -NoProfile -ExecutionPolicy Bypass -File OCR-LIST.ps1 -In "%SEIZED%" -Out "inputs\seized-ocr.txt" || echo OCR failed - continuing without it.
+        powershell -NoProfile -ExecutionPolicy Bypass -File OCR-LIST.ps1 -In "%SEIZED%" -Out "inputs\seized-ocr.txt" %OCRFLAG% || echo OCR failed - continuing without it.
     )
 )
 if not "%RAIDTIME%%NOTES%"=="" (
@@ -176,12 +179,15 @@ echo "Done. Return the raidwatch-out directory (raidwatch-results.zip + SHA256SU
 
 _OCR_PS1 = r"""param(
     [Parameter(Mandatory=$true)][string]$In,
-    [Parameter(Mandatory=$true)][string]$Out
+    [Parameter(Mandatory=$true)][string]$Out,
+    [switch]$RemoveRedStamps
 )
 # OCR-LIST.ps1 — OCR a seized-list PDF or image using Windows built-in
 # WinRT APIs (Windows.Data.Pdf renderer + Windows.Media.Ocr). No installs
 # needed on Windows 10+. Korean OCR requires the Korean language pack;
 # falls back to profile languages, then English.
+# -RemoveRedStamps: erase red stamp ink (사법경찰관 인주) before OCR —
+# stamps placed over text otherwise destroy recognition.
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Runtime.WindowsRuntime
 
@@ -222,7 +228,41 @@ if (-not $engine) {
 }
 if (-not $engine) { throw "no OCR engine (install a language pack with OCR)" }
 
+if ($RemoveRedStamps) {
+    Add-Type -TypeDefinition @'
+public static class RwStampMask {
+    // BGRA buffer → white-out pixels where red channel dominates
+    public static void RemoveRed(byte[] px) {
+        for (int i = 0; i + 3 < px.Length; i += 4) {
+            int b = px[i], g = px[i + 1], r = px[i + 2];
+            if (r > 110 && r - g > 55 && r - b > 55) {
+                px[i] = 255; px[i + 1] = 255; px[i + 2] = 255;
+            }
+        }
+    }
+}
+'@ -ReferencedAssemblies @([byte[]].Assembly.Location)
+}
+
 function Ocr-Bmp($bmp) {
+    if ($RemoveRedStamps) {
+        $bgra = [Windows.Graphics.Imaging.SoftwareBitmap]::Convert(
+            $bmp,
+            [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+            [Windows.Graphics.Imaging.BitmapAlphaMode]::Premultiplied)
+        $buf = [Windows.Storage.Streams.Buffer]::Create(
+            $bgra.PixelWidth * $bgra.PixelHeight * 4)
+        $bgra.CopyToBuffer($buf)
+        $px = [byte[]]::new($buf.Length)
+        [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions]::CopyTo(
+            $buf, $px)
+        [RwStampMask]::RemoveRed($px)
+        $buf2 = [System.Runtime.InteropServices.WindowsRuntime.WindowsRuntimeBufferExtensions]::AsBuffer(
+            $px, 0, $px.Length)
+        $bmp = [Windows.Graphics.Imaging.SoftwareBitmap]::CreateCopyFromBuffer(
+            $buf2, [Windows.Graphics.Imaging.BitmapPixelFormat]::Bgra8,
+            $bgra.PixelWidth, $bgra.PixelHeight)
+    }
     $r = Await-Op ($engine.RecognizeAsync($bmp)) ([Windows.Media.Ocr.OcrResult])
     ($r.Lines | ForEach-Object { $_.Text }) -join "`n"
 }

@@ -344,6 +344,11 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M12 | 증거 봉인: 산출물 해시의 해시(root_hash) + 시점 고정 안내 | ✅ field 산출 `custody.txt` — 즉시 이메일 발송/RFC3161 안내 |
 | M13 | 사무실 GUI | ✅ `raidwatch gui` — Tkinter(exe 내장), baseline/field/bundle 버튼 |
 | M14 | 변호인 검토 체크리스트 자동 생성 | ✅ `package` → `검토체크리스트.md` (데이터 기반 항목) |
+| M15 | 맞복사 수집: 수사관이 가져간 파일 세트를 구조 보존+우리 해시로 복제 | ✅ `raidwatch mirror` — verify.json 또는 원본 목록에서 해석, `MIRROR-SHA256SUMS.txt` |
+| M16 | 인주 마스킹 OCR 전처리 | ✅ `OCR-LIST.ps1 -RemoveRedStamps` — 빨간 도장 잉크를 지우고 OCR (RUN.bat이 질문함) |
+| M17 | 법원 제출 서면: 인쇄 최적화 환부·폐기 청구서 | ✅ `raidwatch petition` → `청구서.html` (A4, 당사자/서명란, 별지 목록 자동 삽입) |
+| M18 | BitLocker 긴급 보존 | ✅ `raidwatch lockbox` — 복구키·프로텍터·볼륨맵 (Windows, 관리자 권한 필요 부분은 항목별 기록) |
+| M19 | PC 잔존 모바일 데이터 보존 | ✅ `raidwatch mobile`/`pc-mobile` — 카톡 PC·iTunes·SmartSwitch·WhatsApp/Telegram Desktop |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.

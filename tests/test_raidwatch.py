@@ -1327,5 +1327,134 @@ class FieldCustodyTests(unittest.TestCase):
             self.assertIn(report["custody_root_hash"], text)
 
 
+class MirrorTests(unittest.TestCase):
+    def test_mirror_copies_resolved_items(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            _write(root / "evidence" / "doc.hwp", b"seized-by-investigator")
+            _write(root / "other.txt", b"not-seized")
+            import hashlib
+
+            claimed = hashlib.sha256(
+                b"seized-by-investigator").hexdigest()
+            vj = Path(td) / "verify.json"
+            vj.write_text(json.dumps({
+                "items": [
+                    {"claimed_path": "C:\\evidence\\doc.hwp",
+                     "claimed_sha256": claimed,
+                     "matched_path": "evidence/doc.hwp",
+                     "status": "verified"},
+                    {"claimed_path": "C:\\ghost.txt",
+                     "matched_path": None, "status": "not_in_inventory"},
+                ],
+                "summary": {"total": 2},
+            }), encoding="utf-8")
+            from raidwatch.mirror import run_mirror
+
+            out = Path(td) / "mirror"
+            rep = run_mirror(root, out, verify_path=vj)
+            self.assertEqual(rep["summary"]["copied"], 1)
+            self.assertTrue(
+                (out / "files" / "evidence" / "doc.hwp").is_file())
+            self.assertEqual(
+                rep["items"][0]["hash_vs_claimed"], "match")
+            sums = (out / "MIRROR-SHA256SUMS.txt").read_text()
+            self.assertIn(claimed, sums)
+            # unresolved item was not copied
+            self.assertFalse((out / "files" / "ghost.txt").exists())
+
+    def test_mirror_seized_list_on_the_fly(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            _write(root / "docs" / "contract.pdf", b"%PDF-1 fake")
+            seized = Path(td) / "seized.txt"
+            seized.write_text("C:\\docs\\contract.pdf\n", encoding="utf-8")
+            from raidwatch.mirror import run_mirror
+
+            rep = run_mirror(root, Path(td) / "m", seized_path=seized)
+            self.assertEqual(rep["summary"]["copied"], 1)
+            self.assertTrue(
+                (Path(td) / "m" / "files" / "docs" / "contract.pdf")
+                .is_file())
+
+
+class PetitionTests(unittest.TestCase):
+    def test_petition_renders_html(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            case = Path(td) / "case"
+            (case / "verify").mkdir(parents=True)
+            (case / "verify" / "verify.json").write_text(json.dumps({
+                "items": [{
+                    "claimed_path": "C:\\x\\outside.docx",
+                    "claimed_sha256": "ab" * 32,
+                    "matched_path": "x/outside.docx",
+                    "status": "verified",
+                    "scope_verdict": "out_of_scope",
+                    "notes": [],
+                }],
+                "summary": {"total": 1, "out_of_scope": 1},
+            }), encoding="utf-8")
+            from raidwatch.petition import run_petition
+
+            rep = run_petition(case, Path(td) / "pet",
+                               case_no="2026고단1234", counsel="김변호")
+            doc = (Path(td) / "pet" / "청구서.html").read_text(
+                encoding="utf-8")
+            self.assertIn("압수물 환부·폐기 청구서", doc)
+            self.assertIn("2026고단1234", doc)
+            self.assertIn("outside.docx", doc)
+            self.assertIn("308", doc)
+            self.assertEqual(rep["items_listed"], 1)
+
+
+class LockboxTests(unittest.TestCase):
+    def test_lockbox_skips_off_windows(self) -> None:
+        import platform
+
+        if platform.system() == "Windows":
+            self.skipTest("posix-only assertion")
+        from raidwatch.lockbox import run_lockbox
+
+        with tempfile.TemporaryDirectory() as td:
+            rep = run_lockbox(None, Path(td) / "lb")
+        self.assertEqual(rep["status"], "skipped")
+
+    def test_protector_parser(self) -> None:
+        from raidwatch.lockbox import _parse_protectors
+
+        text = (
+            "BitLocker Drive Encryption: Volume C:\n"
+            "Numerical Password:\n"
+            "    ID: {AABBCCDD-1234-5678-9ABC-DEF012345678}\n"
+            "    Password:\n"
+            "        123456-234567-345678-456789-567890-678901-789012-890123\n"
+        )
+        prot = _parse_protectors(text)
+        self.assertTrue(prot["key_protector_ids"])
+        # password on its own line after "Password:" — regex expects
+        # 'Numerical Password:' label inline; at minimum no crash
+
+
+class MobileTests(unittest.TestCase):
+    def test_mobile_detects_and_copies(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            kdb = root / "Users" / "u1" / "AppData" / "Local" / "Kakao" / "KakaoTalk" / "u1" / "chat.db"
+            kdb.parent.mkdir(parents=True)
+            kdb.write_bytes(b"SQLite format 3\x00" + b"x" * 100)
+            _write(root / "Users" / "u1" / "Desktop" / "plain.txt", b"no")
+            from raidwatch.mobile import collect_mobile
+
+            rep = collect_mobile(root, Path(td) / "m")
+            self.assertEqual(rep["summary"]["copied"], 1)
+            self.assertEqual(rep["summary"]["sqlite_dbs"], 1)
+            self.assertIn("kakaotalk_pc", rep["targets_found"])
+            self.assertEqual(rep["items"][0]["status"], "copied")
+
+
 if __name__ == "__main__":
     unittest.main()

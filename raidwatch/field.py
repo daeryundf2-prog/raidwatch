@@ -31,6 +31,8 @@ from .db import Inventory
 from .diff import run_diff
 from .inventory import build_inventory
 from .journal import replay_journal
+from .lockbox import run_lockbox
+from .mobile import collect_mobile
 from .profile import ProfileError, load_profile
 from .scan import run_scan
 from .sources import collect_sources
@@ -207,6 +209,21 @@ def run_field(
                 {"step": "journal", "status": "skipped",
                  "reason": "fsutil requires Administrator"}
             )
+
+    # PC-resident mobile data (KakaoTalk DB, iTunes/SmartSwitch backups)
+    # — preserved before investigators touch the machine.
+    _run(
+        "mobile",
+        lambda: collect_mobile(root, steps_dir / "mobile"),
+    )
+
+    # BitLocker recovery keys while the machine is still on — Windows
+    # only; per-volume failures (needs admin) are recorded, not fatal.
+    if platform.system() == "Windows":
+        _run(
+            "lockbox",
+            lambda: run_lockbox(root, steps_dir / "lockbox"),
+        )
 
     profile = None
     if inputs["profile"]:
