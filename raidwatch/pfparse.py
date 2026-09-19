@@ -20,14 +20,17 @@ from pathlib import Path
 from .common import filetime_to_iso
 
 _VERSIONS = {17: "xp", 23: "vista_win7", 26: "win8x", 30: "win10_plus"}
-# (last_runs_offset, run_count_offset) per version
+# (last_runs_offset, run_count_offset) per version — libscca layout:
+# v17/v23 carry a single last-run FILETIME; v26/v30 carry 8 slots and
+# move the run count to 0xD0 (0x98 sits inside the timestamp array).
 _OFFSETS = {
     17: (0x78, 0x90),
     23: (0x80, 0x98),
-    26: (0x80, 0x98),
+    26: (0x80, 0xD0),
     30: (0x80, 0xD0),
 }
 _MAM_SIG = b"MAM\x04"
+_MAX_MAM_EXPECTED = 64 * 1024 * 1024
 
 
 def _decompress_mam(data: bytes) -> bytes | None:
@@ -37,6 +40,8 @@ def _decompress_mam(data: bytes) -> bytes | None:
     try:
         ntdll = ctypes.windll.ntdll
         expected = struct.unpack_from("<I", data, 4)[0]
+        if not 0 < expected <= _MAX_MAM_EXPECTED:
+            return None
         workspace_size = ctypes.c_ulong(0)
         ntdll.RtlGetCompressionWorkSpaceSize(
             ctypes.c_ushort(0x104),  # XPRESS_HUFF | ENGINE_MAXIMUM
@@ -78,11 +83,12 @@ def parse_prefetch(data: bytes) -> dict:
             result["status"] = "compressed_unparsed"
             return result
         data = decompressed
-    if len(data) < 0x60 or data[:4] != b"SCCA":
+    # Real .pf layout: format version @0x00, "SCCA" signature @0x04.
+    if len(data) < 0x60 or data[4:8] != b"SCCA":
         result["status"] = "not_prefetch"
         return result
 
-    version = struct.unpack_from("<I", data, 4)[0]
+    version = struct.unpack_from("<I", data, 0)[0]
     result["version"] = version
     result["version_label"] = _VERSIONS.get(version, f"unknown_{version}")
     result["exe_name"] = (
@@ -90,12 +96,15 @@ def parse_prefetch(data: bytes) -> dict:
     )
 
     offsets = _OFFSETS.get(version)
-    if offsets is None or len(data) < offsets[1] + 4:
+    slots = 8 if version >= 26 else 1
+    if (
+        offsets is None
+        or len(data) < max(offsets[1] + 4, offsets[0] + slots * 8)
+    ):
         result["status"] = "partial"
         return result
     runs_off, count_off = offsets
     result["run_count"] = struct.unpack_from("<I", data, count_off)[0]
-    slots = 8 if version >= 26 else 1
     for i in range(slots):
         raw, = struct.unpack_from("<Q", data, runs_off + i * 8)
         iso = filetime_to_iso(raw)

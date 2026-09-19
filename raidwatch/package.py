@@ -53,7 +53,9 @@ def _write_disposal_list(verify: dict | None, diff: dict | None, dest: Path) -> 
     ]
     ambiguous = [
         e for e in entries
-        if e.get("status") in ("ambiguous_path", "not_in_inventory")
+        if e.get("status")
+        in ("ambiguous_path", "not_in_inventory", "unverifiable",
+            "unparsed_item")
     ]
     if out_scope:
         lines += [
@@ -142,7 +144,7 @@ def _write_procedure_log(case_dir: Path, dest: Path) -> int:
             except json.JSONDecodeError:
                 continue
             counts[e.get("event", "?")] = counts.get(e.get("event", "?"), 0) + 1
-            ts = e.get("ts_utc")
+            ts = e.get("ts") or e.get("ts_utc")
             if ts:
                 first = first or ts
                 last = ts

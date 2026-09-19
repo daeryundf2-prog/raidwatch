@@ -111,8 +111,11 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 ```
 
 범위 판정은 이중으로 한다: `in_scope`(지정된 모든 조건 AND = 좁은 해석),
+`in_scope_partial`(평가된 조건은 전부 일치하지만 일부 조건이 미평가),
 `borderline`(일부 조건만 OR = 넓은 해석), `out_of_scope`(어느 해석에도
-불해당 → 폐기 청구 근거).
+불해당 → 폐기 청구 근거), `unverifiable`(조건이 있으나 전부 평가 불가 —
+예: content 키워드인데 텍스트 추출 불가). 미평가 조건을 `out_of_scope`로
+돌리지 않는다 — 방어용 도구가 범위 판정을 날조하면 안 된다.
 
 `"in": "content"` 키워드는 파일 본문에서 검색한다 — 지원 형식은
 txt/csv/log/eml 등 텍스트(UTF-8·CP949·UTF-16 폴백), docx/xlsx/pptx,

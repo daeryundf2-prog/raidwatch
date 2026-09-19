@@ -76,9 +76,9 @@ def _process_snapshot() -> dict[str, str]:
             capture_output=True, text=True, timeout=15,
         ).stdout
         snap = {}
-        for line in out.splitlines()[1:]:
+        for line in out.splitlines():  # `=` suppresses headers; no skip
             parts = line.strip().split(None, 1)
-            if len(parts) == 2:
+            if len(parts) == 2 and parts[0].isdigit():
                 snap[parts[0]] = parts[1]
         return snap
     except (OSError, subprocess.SubprocessError):

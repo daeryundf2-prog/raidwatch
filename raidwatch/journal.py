@@ -19,6 +19,7 @@ from __future__ import annotations
 import csv
 import io
 import platform
+import re
 import subprocess
 from pathlib import Path
 
@@ -57,16 +58,58 @@ USN_REASONS = {
 
 _HEADER_ALIASES = {
     "file_name": ("file name", "filename", "name"),
-    "reason": ("reason", "usn reason"),
-    "timestamp": ("time stamp", "timestamp", "time"),
+    "reason": ("reason", "usn reason", "updatereasons", "update reasons"),
+    "timestamp": (
+        "time stamp", "timestamp", "time",
+        "updatetimestamp", "update timestamp",
+    ),
     "usn": ("usn",),
     "file_id": ("file id", "fileid"),
     "parent_id": ("parent file id", "parent id"),
 }
 
+# fsutil emits reason *text* (e.g. "File delete | Close") as well as masks
+_REASON_TEXT = {
+    "data overwrite": 0x1,
+    "data extend": 0x2,
+    "data truncation": 0x4,
+    "named data overwrite": 0x10,
+    "named data extend": 0x20,
+    "named data truncation": 0x40,
+    "file create": 0x100,
+    "file delete": 0x200,
+    "ea change": 0x400,
+    "security change": 0x800,
+    "rename old": 0x1000,
+    "rename new": 0x2000,
+    "indexable change": 0x4000,
+    "basic info change": 0x8000,
+    "hard link change": 0x10000,
+    "compression change": 0x20000,
+    "encryption change": 0x40000,
+    "object id change": 0x80000,
+    "reparse point change": 0x100000,
+    "stream change": 0x200000,
+    "close": 0x80000000,
+}
+
+_DATE_RE = re.compile(r"(\d{1,4})[/-](\d{1,2})[/-](\d{1,4})\s+(\d{1,2}):(\d{2}):(\d{2})")
+
 
 def _decode_reasons(mask: int) -> list[str]:
     return [name for bit, name in USN_REASONS.items() if mask & bit]
+
+
+def _parse_reason(value: str) -> tuple[int, list[str]]:
+    """Reason cell → (mask, names). Accepts hex masks and 'a | b' text."""
+    value = value.strip().strip('"')
+    mask = _parse_hex(value)
+    if mask is not None:
+        return mask, _decode_reasons(mask)
+    mask = 0
+    for part in value.split("|"):
+        mask |= _REASON_TEXT.get(part.strip().lower(), 0)
+    return mask, _decode_reasons(mask)
 
 
 def _parse_hex(value: str) -> int | None:
@@ -76,10 +119,75 @@ def _parse_hex(value: str) -> int | None:
         return None
 
 
+def _parse_timestamp(value: str) -> str | None:
+    """FILETIME hex/int, or fsutil's local 'M/D/YYYY H:MM:SS' → ISO."""
+    value = value.strip().strip('"')
+    ft = _parse_hex(value)
+    if ft is not None and ft > 10**15:  # FILETIME-scale integer
+        return filetime_to_iso(ft)
+    m = _DATE_RE.search(value)
+    if m:
+        a, b, c, hh, mm, ss = (int(x) for x in m.groups())
+        year = a if a > 31 else c
+        month, day = (b, a) if a > 31 else (a, b)
+        if month > 12:
+            month, day = day, month
+        try:
+            return f"{year:04d}-{month:02d}-{day:02d}T{hh:02d}:{mm:02d}:{ss:02d}+00:00"
+        except ValueError:
+            return None
+    return None
+
+
+def _guess_columns(row: list[str]) -> dict:
+    """Headerless fsutil rows: identify cells by content shape.
+
+    fsutil csv emits a fixed order — file name, file ID, parent ID, USN,
+    time stamp, reason — but without a header we can only trust shapes:
+    the name is the first non-numeric cell, the timestamp is date-like or
+    FILETIME-scale, and the reason is textual ("a | b") or a trailing
+    mask. Bare numeric cells before the timestamp are IDs/USN, where the
+    last one before the timestamp is the USN.
+    """
+    col: dict[str, int] = {}
+    n = len(row)
+    for i, cell in enumerate(row):
+        v = cell.strip().strip('"')
+        if not v:
+            continue
+        is_hex = _parse_hex(v) is not None
+        is_date = bool(_DATE_RE.search(v))
+        if "file_name" not in col and not is_hex and not is_date:
+            col["file_name"] = i
+        elif is_date or (is_hex and (_parse_hex(v) or 0) > 10**15):
+            col.setdefault("timestamp", i)
+        elif "|" in v or any(w in v.lower() for w in _REASON_TEXT):
+            col.setdefault("reason", i)
+    if "reason" not in col and n > 0:
+        last = row[n - 1].strip().strip('"')
+        if _parse_hex(last) is not None and n - 1 != col.get("file_name"):
+            col["reason"] = n - 1
+    first = (col.get("file_name") or -1) + 1
+    stop = col.get("timestamp", n)
+    numeric = [
+        i for i in range(first, stop)
+        if i != col.get("reason", -1)
+        and _parse_hex(row[i].strip().strip('"')) is not None
+    ]
+    if numeric:
+        col["usn"] = numeric[-1]
+    return col
+
+
 def parse_usn_csv(text: str) -> list[dict]:
-    """Parse fsutil-style USN CSV output into event dicts (lenient headers)."""
+    """Parse USN CSV exports into event dicts.
+
+    Handles headered CSVs (loose header matching incl. MFTECmd's
+    Name/UpdateTimestamp/UpdateReasons) and fsutil's *headerless* csv
+    output, where cells are identified by content shape.
+    """
     reader = csv.reader(io.StringIO(text))
-    rows = list(reader)
+    rows = [r for r in reader if any(c.strip() for c in r)]
     if not rows:
         return []
     header = [c.strip().lower() for c in rows[0]]
@@ -89,26 +197,35 @@ def parse_usn_csv(text: str) -> list[dict]:
             if h in aliases:
                 col[key] = i
                 break
-    if "file_name" not in col or "reason" not in col:
-        return []
+    start = 1 if ("file_name" in col and ("reason" in col or "timestamp" in col)) else 0
+    if start == 0:
+        col = {}  # first row is data, not a header
 
     events = []
-    for row in rows[1:]:
-        if len(row) <= max(col.values()):
+    for row in rows[start:]:
+        if start == 0:
+            col = _guess_columns(row)
+        if "file_name" not in col or len(row) <= col["file_name"]:
             continue
         name = row[col["file_name"]].strip().strip('"')
         if not name:
             continue
-        reason_mask = _parse_hex(row[col["reason"]])
-        ts_raw = row[col["timestamp"]] if "timestamp" in col else ""
-        ts = _parse_hex(ts_raw)
+        mask, names = _parse_reason(row[col["reason"]]) if "reason" in col and len(row) > col["reason"] else (0, [])
         events.append(
             {
                 "file_name": name,
-                "reasons": _decode_reasons(reason_mask or 0),
-                "reason_mask": reason_mask,
-                "timestamp_utc": filetime_to_iso(ts) if ts else None,
-                "usn": _parse_hex(row[col["usn"]]) if "usn" in col else None,
+                "reasons": names,
+                "reason_mask": mask,
+                "timestamp_utc": (
+                    _parse_timestamp(row[col["timestamp"]])
+                    if "timestamp" in col and len(row) > col["timestamp"]
+                    else None
+                ),
+                "usn": (
+                    _parse_hex(row[col["usn"]])
+                    if "usn" in col and len(row) > col["usn"]
+                    else None
+                ),
             }
         )
     return events

@@ -620,8 +620,8 @@ class PfparseTests(unittest.TestCase):
         from raidwatch.pfparse import parse_prefetch
 
         data = bytearray(0x200)
-        data[0:4] = b"SCCA"
-        struct.pack_into("<I", data, 4, 30)  # Win10
+        struct.pack_into("<I", data, 0, 30)  # version @0x00: Win10
+        data[4:8] = b"SCCA"  # signature @0x04 (real .pf layout)
         data[0x10:0x4C] = "FTKIMAGER.EXE".encode("utf-16-le").ljust(60, b"\0")
         struct.pack_into("<Q", data, 0x80, 133600000000000000)  # last run
         struct.pack_into("<I", data, 0xD0, 7)  # run count
@@ -644,10 +644,18 @@ class EvtxTests(unittest.TestCase):
 
         from raidwatch.evtx import decompress_chunks, evtx_strings
 
-        payload = zlib.compress("Print Job 307 목록.xlsx".encode("utf-16-le"))
+        # EVTX chunks carry raw DEFLATE (no zlib wrapper)
+        co = zlib.compressobj(level=6, wbits=-15)
+        payload = (
+            co.compress("Print Job 307 목록.xlsx".encode("utf-16-le"))
+            + co.flush()
+        )
         data = bytearray(0x1000 + 0x200 + len(payload))
         data[0:8] = b"ElfFile\x00"
         data[0x1000 : 0x1000 + 8] = b"ElfChnk\x00"
+        # next_record_offset @chunk+48 bounds the compressed region
+        next_rec = 0x1000 + 0x200 + len(payload)
+        data[0x1000 + 48 : 0x1000 + 52] = next_rec.to_bytes(4, "little")
         data[0x1200 : 0x1200 + len(payload)] = payload
 
         blob = decompress_chunks(bytes(data))
@@ -696,6 +704,145 @@ class PackageTests(unittest.TestCase):
             self.assertTrue((out / "index.json").exists())
             body = (out / "폐기청구목록.md").read_text(encoding="utf-8")
             self.assertIn("photos/img001.jpg", body)
+
+
+class RegressionTests(unittest.TestCase):
+    """Bugs caught by adversarial review — must not regress."""
+
+    def _profile(self, criteria: dict) -> dict:
+        """Build a normalized criteria dict (as load_profile produces)."""
+        crit = {
+            "keywords": [],
+            "extensions": set(),
+            "filename_patterns": [],
+            "date_ranges": [],
+            "path_include": [],
+            "path_exclude": [],
+            "size_bytes": {"min": None, "max": None},
+            "hash_sets": [],
+        }
+        for k, v in criteria.items():
+            if k == "keywords":
+                v = [
+                    {
+                        "term": kw["term"],
+                        "regex": kw.get("regex", False),
+                        "in": kw.get("in", "name"),
+                        "case_sensitive": kw.get("case_sensitive", False),
+                    }
+                    for kw in v
+                ]
+            elif k == "extensions":
+                v = set(v)
+            crit[k] = v
+        return {"criteria": crit, "profile_sha256": "x"}
+
+    def test_content_only_keyword_unverifiable_not_out_of_scope(self) -> None:
+        # A file we could not extract text from must NOT be classified
+        # out_of_scope — the content criterion was never evaluated.
+        profile = self._profile({
+            "keywords": [{"term": "비밀", "in": "content"}],
+            "extensions": [],
+            "filename_patterns": [],
+        })
+        item = {"path": "a.bin", "name": "a.bin", "size": 10,
+                "mtime_ns": 1, "ctime_ns": 1, "atime_ns": 1,
+                "sha256": None, "kind": "file", "status": "ok",
+                "content": None}
+        self.assertEqual(evaluate(item, profile)["verdict"], "unverifiable")
+
+    def test_in_scope_partial_when_a_group_unevaluable(self) -> None:
+        # extension matched but content keyword unevaluable → partial,
+        # not a full in_scope endorsement.
+        profile = self._profile({
+            "keywords": [{"term": "비밀", "in": "content"}],
+            "extensions": [".bin"],
+            "filename_patterns": [],
+        })
+        item = {"path": "a.bin", "name": "a.bin", "size": 10,
+                "mtime_ns": 1, "ctime_ns": 1, "atime_ns": 1,
+                "sha256": None, "kind": "file", "status": "ok",
+                "content": None}
+        self.assertEqual(
+            evaluate(item, profile)["verdict"], "in_scope_partial"
+        )
+
+    def test_md5_claim_is_not_a_sha256_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv)
+            seized = [{
+                "claimed_path": "docs/notes.txt",
+                "rel": "docs/notes.txt",
+                "sha256": "d41d8cd98f00b204e9800998ecf8427e",
+                "hash_algo": "md5",
+            }]
+            report = verify_items(seized, inv)
+            self.assertEqual(report["summary"]["hash_mismatch"], 0)
+            self.assertEqual(report["summary"]["hash_incomparable"], 1)
+            inv.close()
+
+    def test_claimed_hash_without_baseline_digest_is_unverifiable(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv, hash_files=False)
+            seized = [{
+                "claimed_path": "docs/notes.txt",
+                "rel": "docs/notes.txt",
+                "sha256": "a" * 64,
+                "hash_algo": "sha256",
+            }]
+            report = verify_items(seized, inv)
+            item = report["items"][0]
+            self.assertEqual(item["status"], "unverifiable")
+            inv.close()
+
+    def test_rebuild_drops_stale_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv)
+            (root / "docs" / "notes.txt").unlink()
+            (root / "docs" / "report.pdf").unlink()
+            build_inventory(root, inv)  # same db reused
+            self.assertNotIn("docs/notes.txt", inv.paths())
+            self.assertNotIn("docs/report.pdf", inv.paths())
+            inv.close()
+
+    def test_headerless_fsutil_journal_rows(self) -> None:
+        from raidwatch.journal import parse_usn_csv
+
+        # fsutil csv output has NO header: name,fileid,parentid,usn,time,reason
+        text = (
+            '"out.exe","0x100","0x5","0x1234",'
+            '"2024-05-01 12:00:00","File create | Close"\n'
+            '"gone.txt","0x101","0x5","0x1235",'
+            '"2024-05-01 12:01:00","File delete | Close"\n'
+        )
+        events = parse_usn_csv(text)
+        names = {e["file_name"] for e in events}
+        self.assertIn("gone.txt", names)
+        delete_ev = next(e for e in events if e["file_name"] == "gone.txt")
+        self.assertIn("file_delete", delete_ev["reasons"])
+        self.assertIsNotNone(delete_ev["timestamp_utc"])
+
+    def test_scan_counts_unverifiable_hits_separately(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            _write(root / "secret.bin", b"\x00\x01\x02")
+            profile = self._profile({
+                "keywords": [{"term": "비밀", "in": "content"}],
+                "extensions": [], "filename_patterns": [],
+                "path_exclude": [],
+            })
+            result = scan_target(root, profile)
+            self.assertEqual(result["summary"]["unverifiable"], 1)
+            self.assertEqual(result["hits"], [])
 
 
 if __name__ == "__main__":

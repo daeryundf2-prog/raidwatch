@@ -19,7 +19,16 @@ from .profile import evaluate
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{32,128}$")
 _PATH_KEYS = ("path", "file", "filepath", "file_path", "filename", "name")
-_HASH_KEYS = ("sha256", "sha-256", "hash", "sha1", "md5")
+# algo-specific keys first; bare "hash" algorithm is inferred from length
+_HASH_KEYS = ("sha256", "sha-256", "sha1", "sha-1", "md5", "hash")
+_ALGO_BY_LEN = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}
+
+
+def _claim_algo(key: str, digest: str) -> str:
+    k = key.lower().replace("-", "")
+    if k in ("sha256", "sha1", "md5", "sha512"):
+        return k
+    return _ALGO_BY_LEN.get(len(digest), "unknown")
 
 
 def _norm_rel(path: str) -> str:
@@ -29,8 +38,20 @@ def _norm_rel(path: str) -> str:
     return text.lstrip("/")
 
 
+def _mk_item(claimed: str, digest: str | None, algo: str = "sha256") -> dict:
+    return {
+        "claimed_path": claimed,
+        "rel": _norm_rel(claimed),
+        "sha256": digest,
+        "hash_algo": algo,
+    }
+
+
 def parse_seized_list(path: Path | str) -> list[dict]:
-    """Return [{claimed_path, rel, sha256}] from JSON/CSV/TXT evidence lists."""
+    """Return [{claimed_path, rel, sha256, hash_algo}] from JSON/CSV/TXT
+    evidence lists. Rows without a usable path are kept as
+    {"claimed_path": None, "unparsed": True} so they are counted, not
+    silently dropped."""
     path = Path(path)
     text = path.read_text(encoding="utf-8", errors="replace")
     suffix = path.suffix.lower()
@@ -41,13 +62,21 @@ def parse_seized_list(path: Path | str) -> list[dict]:
         rows = data.get("items", data) if isinstance(data, dict) else data
         for entry in rows:
             if isinstance(entry, str):
-                items.append({"claimed_path": entry, "rel": _norm_rel(entry), "sha256": None})
+                items.append(_mk_item(entry, None))
                 continue
             claimed = next((str(entry[k]) for k in _PATH_KEYS if entry.get(k)), None)
             if not claimed:
+                items.append({"claimed_path": None, "rel": None,
+                              "sha256": None, "hash_algo": None,
+                              "unparsed": True, "raw": entry})
                 continue
-            digest = next((str(entry[k]).lower() for k in _HASH_KEYS if entry.get(k)), None)
-            items.append({"claimed_path": claimed, "rel": _norm_rel(claimed), "sha256": digest})
+            digest = algo = None
+            for k in _HASH_KEYS:
+                if entry.get(k):
+                    digest = str(entry[k]).lower()
+                    algo = _claim_algo(k, digest)
+                    break
+            items.append(_mk_item(claimed, digest, algo or "sha256"))
         return items
 
     if suffix == ".csv" or "," in text.splitlines()[0]:
@@ -58,9 +87,13 @@ def parse_seized_list(path: Path | str) -> list[dict]:
         for row in reader:
             claimed = (row.get(path_key) or "").strip() if path_key else ""
             if not claimed:
+                items.append({"claimed_path": None, "rel": None,
+                              "sha256": None, "hash_algo": None,
+                              "unparsed": True, "raw": dict(row)})
                 continue
             digest = (row.get(hash_key) or "").strip().lower() if hash_key else None
-            items.append({"claimed_path": claimed, "rel": _norm_rel(claimed), "sha256": digest or None})
+            algo = _claim_algo(hash_key or "", digest) if digest else "sha256"
+            items.append(_mk_item(claimed, digest or None, algo))
         return items
 
     for line in text.splitlines():
@@ -68,10 +101,12 @@ def parse_seized_list(path: Path | str) -> list[dict]:
         if not line or line.startswith("#"):
             continue
         digest = None
+        algo = "sha256"
         parts = line.split(None, 1)
         if len(parts) == 2 and _HEX_RE.match(parts[0]):
             digest, line = parts[0].lower(), parts[1].strip()
-        items.append({"claimed_path": line, "rel": _norm_rel(line), "sha256": digest})
+            algo = _ALGO_BY_LEN.get(len(digest), "sha256")
+        items.append(_mk_item(line, digest, algo))
     return items
 
 
@@ -140,18 +175,34 @@ def verify_items(
         "total": 0,
         "verified": 0,
         "hash_mismatch": 0,
+        "hash_incomparable": 0,
+        "unverifiable": 0,
+        "unparsed_item": 0,
         "no_claimed_hash": 0,
         "not_in_inventory": 0,
         "ambiguous_path": 0,
         "missing_now": 0,
         "in_scope": 0,
+        "in_scope_partial": 0,
         "borderline": 0,
         "out_of_scope": 0,
         "scope_unknown": 0,
+        "scope_unverifiable": 0,
         "fuzzy_matched": 0,
     }
     for item in seized:
         summary["total"] += 1
+        if item.get("unparsed") or not item.get("rel"):
+            results.append({
+                "claimed_path": item.get("claimed_path"),
+                "claimed_sha256": None,
+                "matched_path": None,
+                "status": "unparsed_item",
+                "scope_verdict": "unknown",
+                "notes": ["seized-list row had no usable path field"],
+            })
+            summary["unparsed_item"] += 1
+            continue
         rel = item["rel"]
         match = _match_path(rel, known)
         match_method = "exact" if match else None
@@ -195,11 +246,30 @@ def verify_items(
         if profile is not None:
             verdict = evaluate(rec.as_dict(), profile)["verdict"]
             entry["scope_verdict"] = verdict
-            key = "scope_unknown" if verdict == "excluded" else verdict
+            # scope verdicts and statuses share names ("unverifiable") —
+            # keep them in separate counters so they never collide.
+            key = {
+                "excluded": "scope_unknown",
+                "unverifiable": "scope_unverifiable",
+            }.get(verdict, verdict)
             summary[key] = summary.get(key, 0) + 1
 
         claimed = (item["sha256"] or "").lower() or None
-        if claimed and rec.sha256 and claimed != rec.sha256:
+        algo = item.get("hash_algo") or "sha256"
+        if claimed and algo != "sha256":
+            # Printed list hash is md5/sha1/etc — cannot compare with our
+            # sha256 inventory; NOT a mismatch.
+            entry["status"] = "verified"
+            summary["hash_incomparable"] += 1
+            entry["notes"].append(
+                f"claimed {algo} hash not comparable to baseline sha256"
+            )
+        elif claimed and not rec.sha256:
+            entry["status"] = "unverifiable"
+            entry["notes"].append(
+                "baseline has no digest for this path; claim unverifiable"
+            )
+        elif claimed and claimed != rec.sha256:
             entry["status"] = "hash_mismatch"
             entry["notes"].append(f"claimed {claimed} != baseline {rec.sha256}")
         elif not claimed:
@@ -243,7 +313,10 @@ def render_verify_markdown(report: dict, seized_source: str) -> str:
         f"| 전체 항목 | {s['total']} |",
         f"| 검증 일치 | {s['verified']} |",
         f"| 해시 불일치 | {s['hash_mismatch']} |",
+        f"| 해시 알고리즘 상이(md5/sha1 — 비교 불가) | {s['hash_incomparable']} |",
+        f"| 검증 불가(기준선 해시 없음) | {s['unverifiable']} |",
         f"| 해시 미기재(경로만 일치) | {s['no_claimed_hash']} |",
+        f"| 파싱 불가 행 | {s['unparsed_item']} |",
         f"| 인벤토리에 없음 | {s['not_in_inventory']} |",
         f"| 퍼지 매칭(OCR 손상 경로 복원) | {s['fuzzy_matched']} |",
         f"| 경로 모호 | {s['ambiguous_path']} |",
@@ -254,14 +327,17 @@ def render_verify_markdown(report: dict, seized_source: str) -> str:
         "| 구분 | 건수 |",
         "|---|---|",
         f"| 범위 내(좁은 해석 AND) | {s['in_scope']} |",
+        f"| 범위 내 후보(일부 조건 미평가) | {s['in_scope_partial']} |",
         f"| 경계(넓은 해석에서만 해당) | {s['borderline']} |",
         f"| **범위 밖(어느 해석에도 불해당)** | {s['out_of_scope']} |",
-        f"| 판정 불가 | {s['scope_unknown']} |",
+        f"| 판정 불가(조건 평가 불가) | {s['scope_unverifiable']} |",
+        f"| 제외 대상 | {s['scope_unknown']} |",
         "",
     ]
     flagged = [
         it for it in report["items"]
-        if it["status"] != "verified" or it["scope_verdict"] == "out_of_scope"
+        if it["status"] != "verified"
+        or it["scope_verdict"] in ("out_of_scope", "unverifiable")
     ]
     if flagged:
         lines += [

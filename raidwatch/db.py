@@ -72,6 +72,10 @@ class FileRecord:
 class Inventory:
     def __init__(self, db_path: Path | str, *, create: bool = False) -> None:
         self.db_path = Path(db_path)
+        if not create and not self.db_path.is_file():
+            # sqlite3.connect would silently CREATE an empty file at a
+            # possibly-evidence path — refuse instead.
+            raise FileNotFoundError(f"inventory db not found: {self.db_path}")
         self.conn = sqlite3.connect(str(self.db_path))
         if create:
             self.conn.executescript(SCHEMA)
@@ -109,6 +113,12 @@ class Inventory:
                 rec.status,
             ),
         )
+
+    def clear_files(self) -> None:
+        """Drop all file rows — rebuilding into a reused db must not leave
+        stale paths (a file deleted since the last run would otherwise
+        survive and poison diffs)."""
+        self.conn.execute("DELETE FROM files")
 
     def commit(self) -> None:
         self.conn.commit()

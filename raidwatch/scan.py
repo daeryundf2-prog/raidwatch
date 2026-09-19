@@ -37,18 +37,21 @@ def scan_target(
         "excluded": 0,
         "hits": 0,
         "in_scope": 0,
+        "in_scope_partial": 0,
         "borderline": 0,
         "errors": 0,
         "skipped_status": {},
         "content_extracted": 0,
         "content_extract_failed": 0,
+        "content_not_evaluated": 0,
+        "unverifiable": 0,
         "content_keyword_terms": len(content_kws),
     }
     for rel, abs_path, st, kind in iter_fs(root, follow_symlinks=follow_symlinks):
         if kind == "dir":
             continue
         summary["evaluated"] += 1
-        rec = record_for(
+        rec, _atime_ok = record_for(
             rel, abs_path, st, kind,
             hash_files=hash_files, max_hash_bytes=max_hash_bytes,
         )
@@ -73,14 +76,23 @@ def scan_target(
             else:
                 extract_failed = True
                 summary["content_extract_failed"] += 1
+        elif content_kws and item["content"] is None:
+            # Content criterion exists but was never evaluated for this
+            # file (unsupported type/oversize/stat failure) — count it
+            # rather than letting it vanish into out_of_scope.
+            summary["content_not_evaluated"] += 1
         result = evaluate(item, profile)
         if result["excluded"]:
             summary["excluded"] += 1
             continue
+        if result["verdict"] == "unverifiable":
+            summary["unverifiable"] += 1
+            continue
         if not result["broad"]:
             continue
         summary["hits"] += 1
-        summary["in_scope" if result["narrow"] else "borderline"] += 1
+        v = result["verdict"]
+        summary[v if v in ("in_scope", "in_scope_partial") else "borderline"] += 1
         hits.append(
             {
                 "seq": summary["hits"],

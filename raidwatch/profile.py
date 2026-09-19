@@ -151,7 +151,8 @@ def evaluate(item: dict, profile: dict) -> dict:
     if crit["keywords"]:
         name_kws = [k for k in crit["keywords"] if k["in"] != "content"]
         content_kws = [k for k in crit["keywords"] if k["in"] == "content"]
-        name_hit = any(_kw_match(k, name, rel_l) for k in name_kws)
+        # rel (raw) not rel_l — case_sensitive keywords need real casing
+        name_hit = any(_kw_match(k, name, rel) for k in name_kws)
         if name_hit:
             groups["keywords"] = True
         elif content_kws:
@@ -167,9 +168,12 @@ def evaluate(item: dict, profile: dict) -> dict:
             groups["keywords"] = False
 
     if crit["date_ranges"]:
-        ok = False
+        ok: bool | None = False
         for dr in crit["date_ranges"]:
-            value = item.get(f"{dr['field']}_ns") or 0
+            value = item.get(f"{dr['field']}_ns")
+            if not value:  # missing/zero timestamp — not evaluable
+                ok = None
+                continue
             if dr["from_ns"] is not None and value < dr["from_ns"]:
                 continue
             if dr["to_ns"] is not None and value > dr["to_ns"]:
@@ -192,20 +196,36 @@ def evaluate(item: dict, profile: dict) -> dict:
 
     if crit["hash_sets"]:
         digest = (item.get("sha256") or "").lower()
-        groups["hash_sets"] = bool(
-            digest and any(digest in hs["digests"] for hs in crit["hash_sets"])
+        groups["hash_sets"] = (
+            None
+            if not digest  # no hash → membership is unevaluable, not False
+            else any(digest in hs["digests"] for hs in crit["hash_sets"])
         )
 
     present = [g for g, v in groups.items() if v is not None]
     matched = [g for g in present if groups[g]]
     narrow = bool(present) and all(groups[g] for g in present)
     broad = bool(matched)
+    has_unevaluable = any(v is None for v in groups.values())
     if excluded:
         verdict = "excluded"
+    elif groups and not present:
+        # Every populated criterion group was unevaluable (e.g. content
+        # keywords with no extractable text) — verdict is unknown, NOT
+        # out_of_scope. A defense tool must not fabricate scope findings.
+        verdict = "unverifiable"
+    elif narrow and has_unevaluable:
+        # Every evaluated group matched but some criteria couldn't be
+        # evaluated — an honest partial, not full in_scope.
+        verdict = "in_scope_partial"
     elif narrow:
         verdict = "in_scope"
     elif broad:
         verdict = "borderline"
+    elif has_unevaluable:
+        # Nothing matched, but an unevaluable group might have — cannot
+        # assert out_of_scope either.
+        verdict = "unverifiable"
     else:
         verdict = "out_of_scope"
     return {

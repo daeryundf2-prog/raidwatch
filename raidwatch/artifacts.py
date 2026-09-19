@@ -78,7 +78,10 @@ EVT_LOG_HINTS = (
 
 
 def _tool_label(name: str) -> str | None:
-    low = name.lower()
+    """Substring-match markers against the filename stem. Broad by design:
+    prefetch names embed hashes (FTKIMAGER.EXE-1A2B3C.pf) and tool exes
+    vary — a false label only marks a file for review, never excludes it."""
+    low = Path(name).stem.lower()
     for marker, label in KNOWN_TOOL_MARKERS.items():
         if marker in low:
             return label
@@ -87,20 +90,22 @@ def _tool_label(name: str) -> str | None:
 
 def _classify_artifact(rel: str) -> str | None:
     parts = rel.lower().split("/")
-    if len(parts) >= 3 and tuple(parts[:3]) == ARTIFACT_DIRS["prefetch"]:
+
+    def _starts(prefix: tuple) -> bool:
+        return tuple(parts[: len(prefix)]) == prefix
+
+    if _starts(ARTIFACT_DIRS["prefetch"]) or "prefetch" in parts:
         return "prefetch"
-    if "prefetch" in parts:
-        return "prefetch"
-    if len(parts) >= 5 and tuple(parts[:5]) == ARTIFACT_DIRS["evtx"]:
-        return "evtx"
-    if "winevt" in parts:
+    if (_starts(ARTIFACT_DIRS["evtx"]) or "winevt" in parts) and any(
+        h in parts[-1] for h in EVT_LOG_HINTS
+    ):
         return "evtx"
     joined = "/".join(parts)
     if RECENT_PATH in joined or any(h in parts for h in JUMPLIST_HINT):
         return "recent_items"
     if parts[-1] in HIVE_NAMES or parts[-1] == DEVICE_LOG:
         return "registry_or_device_log"
-    if len(parts) >= 4 and tuple(parts[:4]) == ARTIFACT_DIRS["drivers"]:
+    if _starts(ARTIFACT_DIRS["drivers"]):
         return "drivers"
     return None
 
@@ -127,7 +132,9 @@ def detect_shadow_copies() -> dict:
                 "note": f"vssadmin failed: {exc}"}
 
 
-def _copy_and_hash(src: Path, dest_dir: Path, tag: str, max_bytes: int) -> dict:
+def _copy_and_hash(
+    src: Path, dest_dir: Path, tag: str, max_bytes: int, rel: str
+) -> dict:
     try:
         size = src.stat().st_size
     except OSError:
@@ -135,7 +142,9 @@ def _copy_and_hash(src: Path, dest_dir: Path, tag: str, max_bytes: int) -> dict:
     if size > max_bytes:
         return {"copied_to": None, "sha256": None, "skipped": "too_large"}
     dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"{tag}__{src.name}"
+    # Same-named artifacts exist per-user (NTUSER.DAT, *.evtx) — encode the
+    # full relative path so copies never overwrite each other.
+    dest = dest_dir / f"{tag}__{rel.replace('/', '__')}"
     try:
         shutil.copy2(src, dest)
         return {"copied_to": str(dest), "sha256": sha256_file(src)}
@@ -173,7 +182,7 @@ def collect_artifacts(
             "category": category,
             "size": st.st_size,
             "mtime_utc": ns_to_iso(st.st_mtime_ns),
-            **_copy_and_hash(abs_path, copies_dir, category, max_file_bytes),
+            **_copy_and_hash(abs_path, copies_dir, category, max_file_bytes, rel),
         }
         if entry["copied_to"]:
             summary["copied"] += 1
@@ -182,7 +191,10 @@ def collect_artifacts(
             m = PF_NAME_RE.match(abs_path.name)
             exe_guess = m.group("exe") if m else abs_path.stem
             entry["exe_guess"] = exe_guess
-            pf = parse_prefetch(abs_path.read_bytes() if abs_path.is_file() else b"")
+            try:
+                pf = parse_prefetch(abs_path.read_bytes())
+            except OSError:
+                pf = {"status": "read_error"}
             entry["prefetch"] = {
                 "exe_name": pf.get("exe_name"),
                 "version_label": pf.get("version_label"),
@@ -255,7 +267,7 @@ def collect_artifacts(
 
     # Drivers are also evidence of tool execution (e.g. winpmem kernel driver)
     for drv in artifacts.get("drivers", []):
-        label = _tool_label(drv["path"])
+        label = _tool_label(drv["path"].rsplit("/", 1)[-1])
         if label:
             observed.setdefault(label, []).append(
                 {"evidence": "driver_file", "path": drv["path"], "mtime_utc": drv["mtime_utc"]}

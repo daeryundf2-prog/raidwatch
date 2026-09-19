@@ -24,21 +24,33 @@ CHUNK_HEADER = 0x200
 
 
 def decompress_chunks(data: bytes) -> bytes:
-    """Decompress all EVTX chunks into a concatenated binxml stream."""
+    """Decompress all EVTX chunks into a concatenated binxml stream.
+
+    Chunk payloads are *raw* DEFLATE (RFC 1951) — no zlib wrapper —
+    so wbits must be -15. The compressed region inside a chunk ends at
+    the chunk's next_record_offset field (chunk+48).
+    """
     if not data.startswith(FILE_SIG):
         return b""
     out = bytearray()
     for off in range(0x1000, len(data) - CHUNK_HEADER, CHUNK_SIZE):
         if data[off : off + 8] != CHUNK_SIG:
             continue
-        payload = data[off + CHUNK_HEADER : off + CHUNK_SIZE]
+        end = min(off + CHUNK_SIZE, len(data))
+        # next_record_offset (absolute file offset) bounds the deflate area
+        next_rec = int.from_bytes(data[off + 48 : off + 52], "little")
+        if off + CHUNK_HEADER < next_rec <= end:
+            payload = data[off + CHUNK_HEADER : next_rec]
+        else:
+            payload = data[off + CHUNK_HEADER : end]
         try:
-            out += zlib.decompressobj().decompress(payload)
+            out += zlib.decompress(payload, -15)
         except zlib.error:
-            # Partially-filled last chunk: try progressively shorter windows
-            for trim in (0x8000, 0x4000, 0x1000, 0x400):
+            # Partially-filled last chunk: keep the raw-deflate attempt but
+            # trim trailing padding progressively.
+            for trim in (0x8000, 0x4000, 0x1000, 0x400, 0x100):
                 try:
-                    out += zlib.decompress(payload[: len(payload) - trim])
+                    out += zlib.decompress(payload[: len(payload) - trim], -15)
                     break
                 except zlib.error:
                     continue

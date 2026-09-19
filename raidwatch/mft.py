@@ -29,7 +29,6 @@ from .common import (
 )
 
 RECORD_SIZE = 1024
-SECTOR_SIZE = 512
 ATTR_END = 0xFFFFFFFF
 ATTR_SI = 0x10
 ATTR_FILENAME = 0x30
@@ -42,16 +41,23 @@ class MftError(ValueError):
     pass
 
 
-def _apply_fixup(record: bytearray) -> bool:
-    """Apply the update-sequence fixup; False when the signature mismatches."""
+def _apply_fixup(record: bytearray, record_size: int) -> bool:
+    """Apply the update-sequence fixup; False when the signature mismatches.
+
+    The sector stride is derived from record_size // (usa_count - 1) so
+    4KB-native volumes (usa_count=2, tail at record_size-2) parse too.
+    """
     if len(record) < 8:
         return False
     usa_off, usa_count = struct.unpack_from("<HH", record, 4)
-    if usa_count == 0 or usa_off + usa_count * 2 > len(record):
+    if usa_count < 2 or usa_off + usa_count * 2 > len(record):
+        return False
+    stride = record_size // (usa_count - 1)
+    if stride <= 0 or stride > record_size:
         return False
     signature = bytes(record[usa_off : usa_off + 2])
     for i in range(1, usa_count):
-        tail = i * SECTOR_SIZE - 2
+        tail = i * stride - 2
         if tail + 2 > len(record):
             break
         if bytes(record[tail : tail + 2]) != signature:
@@ -60,21 +66,29 @@ def _apply_fixup(record: bytearray) -> bool:
     return True
 
 
-def _iter_attrs(record: bytes, first_off: int):
+def _iter_attrs(record: bytes, first_off: int, limit: int):
+    """Yield (attr_type, off, attr_len), bounded by the record's used size."""
     off = first_off
-    while off + 8 <= len(record):
+    end = min(limit, len(record))
+    while off + 16 <= end:
         attr_type, attr_len = struct.unpack_from("<II", record, off)
         if attr_type == ATTR_END or attr_len < 16:
             return
+        if off + attr_len > end:
+            return  # truncated attribute — stop, don't parse garbage
         yield attr_type, off, attr_len
         off += attr_len
 
 
-def _attr_content(record: bytes, off: int) -> bytes | None:
-    """Resident-attribute payload; None for non-resident attributes."""
+def _attr_content(record: bytes, off: int, attr_len: int) -> bytes | None:
+    """Resident-attribute payload, bounded strictly to the attribute."""
     if record[off + 8] != 0:
+        return None  # non-resident
+    if attr_len < 24 or off + 22 > len(record):
         return None
     content_len, content_off = struct.unpack_from("<IH", record, off + 16)
+    if content_off < 24 or content_off + content_len > attr_len:
+        return None  # content region escapes its own attribute
     start = off + content_off
     return record[start : start + content_len]
 
@@ -92,11 +106,12 @@ def parse_mft(data: bytes, record_size: int = RECORD_SIZE) -> list[dict]:
         )
         if bytes(raw[:4]) != b"FILE":
             continue
-        if not _apply_fixup(raw):
+        if not _apply_fixup(raw, record_size):
             entries.append({"index": index, "parse_error": "fixup_mismatch"})
             continue
         flags = struct.unpack_from("<H", raw, 0x16)[0]
         first_off = struct.unpack_from("<H", raw, 0x14)[0]
+        used_size = struct.unpack_from("<I", raw, 0x18)[0]
 
         entry: dict = {
             "index": index,
@@ -109,8 +124,9 @@ def parse_mft(data: bytes, record_size: int = RECORD_SIZE) -> list[dict]:
             "_resident_data": None,
         }
         si_times = fn_times = None
-        for attr_type, off, _ in _iter_attrs(raw, first_off):
-            content = _attr_content(raw, off)
+        limit = used_size if first_off < used_size <= record_size else record_size
+        for attr_type, off, attr_len in _iter_attrs(raw, first_off, limit):
+            content = _attr_content(raw, off, attr_len)
             if content is None:
                 continue
             if attr_type == ATTR_SI and len(content) >= 48:

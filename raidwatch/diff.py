@@ -166,6 +166,21 @@ def run_diff(baseline_db: Path, current_db: Path, out_dir: Path) -> dict:
     report = diff_inventories(
         baseline, current, baseline_created_ns=baseline_created_ns
     )
+    atime_mode = baseline.get_meta("atime_preservation")
+    cur_atime_mode = current.get_meta("atime_preservation")
+    report["atime_reliability"] = {
+        "baseline_preservation": atime_mode,
+        "current_preservation": cur_atime_mode,
+        "note": (
+            "accessed/atime findings require that the OS updates atime on "
+            "reads — Windows disables last-access updates by default, so "
+            "an empty 'accessed' list proves nothing. Baseline modes: "
+            "o_noatime = reads never touched atime; restored = atime was "
+            "written back after hashing (lossless on Windows; on POSIX "
+            "the restore bumps ctime, so ctime-only changes there may be "
+            "scan artifacts); none/mixed = atime may reflect our own scan."
+        ),
+    }
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / "diff.json", report)
     (out_dir / "report.md").write_text(

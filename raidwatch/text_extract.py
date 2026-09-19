@@ -61,7 +61,7 @@ def _extract_zip_xml_text(zf: zipfile.ZipFile) -> str:
             continue
         try:
             data = zf.read(name)
-        except (RuntimeError, zipfile.BadZipFile):
+        except (RuntimeError, zipfile.BadZipFile, NotImplementedError, OSError):
             continue
         if len(data) > _MAX_MEMBER_BYTES:
             continue
@@ -82,7 +82,7 @@ def _extract_zip_container(zf: zipfile.ZipFile, depth: int) -> str:
             continue
         try:
             data = zf.read(info)
-        except (RuntimeError, zipfile.BadZipFile):
+        except (RuntimeError, zipfile.BadZipFile, NotImplementedError, OSError):
             continue
         text = _extract_bytes(data, suffix, depth=depth + 1)
         if text:
@@ -157,7 +157,10 @@ class CfbFile:
 
     def _sector(self, sid: int) -> bytes:
         start = 512 + sid * self._sector_size
-        return self._data[start : start + self._sector_size]
+        sector = self._data[start : start + self._sector_size]
+        if len(sector) != self._sector_size:
+            raise CfbError(f"truncated sector {sid}")
+        return sector
 
     def _read_chain(self, start_sid: int) -> bytes:
         out = bytearray()
@@ -213,7 +216,11 @@ class CfbFile:
         )
         if entry is None:
             return None
-        if entry["size"] < self._mini_cutoff and self._mini_stream:
+        if entry["size"] < self._mini_cutoff:
+            # Small streams live in the mini stream — never reinterpret
+            # a mini-sector id as a regular sector id.
+            if not self._mini_stream:
+                return None
             return self._read_mini_chain(entry["start"])[: entry["size"]]
         return self._read_chain(entry["start"])[: entry["size"]]
 
@@ -226,7 +233,8 @@ def _hwp_text(cfb: CfbFile) -> str | None:
     for name in cfb.stream_names():
         if not name.lower().startswith("section"):
             continue
-        stream = cfb.open_stream(f"BodyText/{name}") or cfb.open_stream(name)
+        # CFB entry names are flat; BodyText/SectionN resolves as "SectionN"
+        stream = cfb.open_stream(name)
         if not stream:
             continue
         try:
@@ -290,7 +298,7 @@ def _extract_bytes(data: bytes, suffix: str, *, depth: int) -> str | None:
     if suffix == ".hwp":
         try:
             return _hwp_text(CfbFile(data))
-        except CfbError:
+        except (CfbError, struct.error, IndexError, zlib.error):
             return None
     if suffix in OOXML_EXTS or (suffix == ".zip" and depth < 2):
         try:
@@ -298,7 +306,7 @@ def _extract_bytes(data: bytes, suffix: str, *, depth: int) -> str | None:
                 if suffix == ".zip":
                     return _extract_zip_container(zf, depth) or None
                 return _extract_zip_xml_text(zf) or None
-        except zipfile.BadZipFile:
+        except (zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError):
             return None
     return None
 

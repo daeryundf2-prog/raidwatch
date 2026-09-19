@@ -109,7 +109,7 @@ matched 조건, status, deleted. 여기에 대응용 필드 추가:
 | 추가 필드 | 설명 |
 |---|---|
 | in_seized_list | 수사기관이 교부한 선별 목록에 등장하는가 |
-| scope_verdict | `in_scope` / `borderline` / `out_of_scope` (영장 해석별) |
+| scope_verdict | `in_scope` / `in_scope_partial` / `borderline` / `out_of_scope` / `unverifiable` — 미평가 조건은 out_of_scope가 아니라 unverifiable/partial로 정직하게 표시 |
 | modified_during_raid | baseline 대비 변경 여부 (mtime/hash/size) |
 
 ## 3. 집행 중 감시 (Watcher) — 사전 설치 전제
@@ -179,6 +179,13 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
   (수정이 아니라 읽기만 한 흔적 — "봤지만 안 가져간" 증거와 연계).
   단 Windows 기본 설정은 atime 기록이 꺼져 있을 수 있어 빈 결과일 수
   있음을 리포트에 명시한다.
+- **자기 오염 방지**: 인벤토리 해싱 자체가 atime을 전진시키면 모든
+  파일이 `accessed`로 오탐된다. 이를 막기 위해 O_NOATIME(Linux)을
+  시도하고, 불가하면 해싱 직후 atime/mtime을 utime으로 복원한다
+  (Windows는 ctime이 생성시각이라 무손실; POSIX는 ctime이 bump되어
+  ctime 단독 변경은 스캔 아티팩트일 수 있음을 리포트에 명시).
+  인벤토리 meta의 `atime_preservation`(o_noatime/restored/mixed/none)
+  로 신뢰도를 노출한다.
 - **백데이팅 탐지**: 집행 창에 새로 나타난 파일인데 mtime이 기준선
   생성 시각보다 과거 → `backdated` 플래그 (timestomp로 위장된 식재
   의심). 생성 시각(birth time)과 mtime의 모순은 위조의 고전적 단서다.
