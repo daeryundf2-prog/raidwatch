@@ -18,7 +18,9 @@ import subprocess
 from pathlib import Path
 
 from .common import ns_to_iso, sha256_file, utc_now_iso, write_json, write_manifest
+from .evtx import decompress_evtx_file, evtx_strings
 from .inventory import iter_fs
+from .pfparse import parse_prefetch
 from .sources import extract_strings
 
 # Known investigator-tool executable markers (lowercase substring → label)
@@ -180,11 +182,40 @@ def collect_artifacts(
             m = PF_NAME_RE.match(abs_path.name)
             exe_guess = m.group("exe") if m else abs_path.stem
             entry["exe_guess"] = exe_guess
-            label = _tool_label(exe_guess) or _tool_label(abs_path.name)
+            pf = parse_prefetch(abs_path.read_bytes() if abs_path.is_file() else b"")
+            entry["prefetch"] = {
+                "exe_name": pf.get("exe_name"),
+                "version_label": pf.get("version_label"),
+                "run_count": pf.get("run_count"),
+                "last_runs_utc": pf.get("last_runs_utc"),
+                "parse_status": pf.get("status"),
+            }
+            label = (
+                _tool_label(exe_guess)
+                or _tool_label(pf.get("exe_name") or "")
+                or _tool_label(abs_path.name)
+            )
             if label:
                 observed.setdefault(label, []).append(
-                    {"evidence": "prefetch", "path": rel, "mtime_utc": entry["mtime_utc"]}
+                    {
+                        "evidence": "prefetch",
+                        "path": rel,
+                        "run_count": pf.get("run_count"),
+                        "last_runs_utc": pf.get("last_runs_utc"),
+                    }
                 )
+        elif category == "evtx":
+            binxml_dir = out_dir / "binxml"
+            dec = decompress_evtx_file(
+                abs_path, binxml_dir / (rel.replace("/", "__") + ".binxml")
+            )
+            entry["binxml"] = dec
+            strings = evtx_strings(abs_path)
+            if strings:
+                dest = strings_dir / (rel.replace("/", "__") + ".strings.txt")
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_text("\n".join(strings) + "\n", encoding="utf-8")
+                entry["strings_to"] = str(dest)
         elif category == "recent_items" and abs_path.suffix.lower() == ".lnk":
             strings = extract_strings(abs_path)
             targets = [s for s in strings if re.search(r"[A-Za-z]:[\\/]|^/|\.(lnk|exe|txt|pdf|docx?|hwp)\b", s, re.IGNORECASE)]
@@ -199,6 +230,25 @@ def collect_artifacts(
                 observed.setdefault(label, []).append(
                     {"evidence": category, "path": rel, "mtime_utc": entry["mtime_utc"]}
                 )
+            if category == "registry_or_device_log" and entry["copied_to"]:
+                strings = extract_strings(abs_path)
+                # USB device serials and service names left by collection media
+                hits = [
+                    s for s in strings
+                    if re.search(
+                        r"USBSTOR|VID_[0-9A-Fa-f]{4}|Disk&Ven_|serial|"
+                        r"FTK|EnCase|AXIOM|OUTRIDER|KAPE|MD-LIVE",
+                        s,
+                    )
+                ]
+                if hits:
+                    entry["notable_strings"] = hits[:50]
+                    dest = strings_dir / (rel.replace("/", "__") + ".strings.txt")
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_text(
+                        "\n".join(strings) + "\n", encoding="utf-8"
+                    )
+                    entry["strings_to"] = str(dest)
 
         artifacts.setdefault(category, []).append(entry)
         summary["scanned"] += 1

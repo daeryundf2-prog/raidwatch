@@ -13,6 +13,9 @@ from .common import write_json, write_manifest
 from .db import Inventory
 from .diff import run_diff
 from .inventory import build_inventory
+from .journal import replay_journal
+from .mft import carve_mft
+from .package import build_package
 from .profile import ProfileError, load_profile
 from .scan import run_scan
 from .sources import collect_sources
@@ -167,6 +170,44 @@ def cmd_watch(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_carve(args: argparse.Namespace) -> int:
+    report = carve_mft(
+        Path(args.mft).expanduser(),
+        Path(args.out).expanduser(),
+        recover_resident=not args.no_recover,
+    )
+    _print(report["summary"])
+    return 0
+
+
+def cmd_journal(args: argparse.Namespace) -> int:
+    from .common import iso_to_ns
+
+    since_ns = iso_to_ns(args.since) if args.since else None
+    try:
+        report = replay_journal(
+            Path(args.out).expanduser(),
+            volume=args.volume,
+            csv_path=Path(args.csv).expanduser() if args.csv else None,
+            since_ns=since_ns,
+            name_filter=args.filter,
+        )
+    except (OSError, ValueError) as exc:
+        print(f"journal error: {exc}", file=sys.stderr)
+        return 2
+    _print(report["summary"])
+    return 0
+
+
+def cmd_package(args: argparse.Namespace) -> int:
+    result = build_package(
+        Path(args.case).expanduser(),
+        Path(args.out).expanduser(),
+    )
+    _print(result["summary"])
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="raidwatch",
@@ -242,6 +283,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--once", action="store_true", help="single pass then exit")
     p.add_argument("--max-passes", type=int, default=None)
     p.set_defaults(func=cmd_watch)
+
+    p = sub.add_parser(
+        "carve",
+        help="parse an $MFT dump: deleted entries + resident-data recovery",
+    )
+    p.add_argument("--mft", required=True, help="path to an $MFT byte dump")
+    p.add_argument("--out", required=True)
+    p.add_argument(
+        "--no-recover", action="store_true",
+        help="list deleted entries only, skip resident payload recovery",
+    )
+    p.set_defaults(func=cmd_carve)
+
+    p = sub.add_parser(
+        "journal",
+        help="replay the NTFS USN journal (fsutil on Windows, or CSV export)",
+    )
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--volume", help="e.g. C: — runs fsutil (Windows, elevated)")
+    src.add_argument("--csv", help="previously exported USN journal CSV")
+    p.add_argument("--out", required=True)
+    p.add_argument("--since", help="only events after this ISO date/time")
+    p.add_argument("--filter", help="substring filter on file names")
+    p.set_defaults(func=cmd_journal)
+
+    p = sub.add_parser(
+        "package",
+        help="assemble the legal-review bundle (disposal list + timeline)",
+    )
+    p.add_argument("--case", required=True, help="case dir holding raidwatch outputs")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_package)
 
     return parser
 

@@ -88,12 +88,18 @@
 넓게/좁게 양쪽으로 스캔**한다. 영장 문언상 넓은 해석으로도 매칭되지
 않는 파일이 압수 목록에 있으면 범위 초과의 직접 근거가 된다.
 
-### 2.3 내용 검색
+### 2.3 내용 검색 ✅ 구현됨 (`scan` + `in: content` 키워드)
 
-- 텍스트 추출: plain text(UTF-8/16, EUC-KR/CP949), docx/xlsx/pptx,
-  PDF 텍스트 레이어, **HWP/HWPX**(한국 문서 필수), 압축 재귀(깊이 제한)
-- 추출 실패/용량 초과/권한 거부는 전부 상태로 기록 — 수사기관이
-  "검색했다"고 주장한 범위가 실제로 검색 가능했는지 교차 확인
+- 텍스트 추출 구현: plain text(UTF-8/CP949/UTF-16 폴백), docx/xlsx/pptx,
+  HWPX(zip+XML), **legacy HWP**(내장 CFB 파서 → PrvText + zlib 압축
+  BodyText의 UTF-16 런), PDF(deflate 스트림의 Tj/TJ 문자열),
+  zip 멤버 재귀(깊이 1)
+- 추출 실패/용량 초과/권한 거부는 전부 상태로 기록(`extract_failed`,
+  `content_extract_failed` 카운트) — 수사기관이 "검색했다"고 주장한
+  범위가 실제로 검색 가능했는지 교차 확인
+- 한계 명시: 추출은 위치정보 없는 best-effort 텍스트다. 암호화/DRM
+  문서, PDF 폰트 매핑(ToUnicode 미포함), 스풀 RAW 모드는 미지원 — 매칭
+  실패를 "내용 부재"의 증거로 쓰지 않는다.
 
 ### 2.4 Hit 목록
 
@@ -158,8 +164,10 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 - **휴지통**: `$Recycle.Bin/**` — 삭제됐지만 복구 가능한 목록 파일.
 - 수집물은 사본+해시+출처 이유(spool/temp/recycle_bin)로 보존하고,
   텍스트 계열은 `.strings.txt`로 추출본을 둔다.
-- 범위 밖 명시: 미할당 영역/MFT 삭제 카빙은 이 포터블 빌드에서 하지
-  않는다 (raw 디스크 접근 필요 — 별도 과제).
+- 삭제된 목록 파일의 추가 회수 경로는 `raidwatch carve`(§4.3b)로
+  커버한다 — $MFT 덤프의 resident 데이터는 레코드 안에 온전히 남는다.
+  비-resident 데이터(미할당 클러스터)는 raw 디스크 이미지가 필요해
+  여전히 범위 밖이다.
 
 ### 4.2 변경점 비교 (기준선 vs 사후 상태)
 
@@ -204,6 +212,25 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 - **VSS 스냅샷 감지**: 기준선을 미리 못 찍었어도 Windows 볼륨 섀도
   카피에 집행 이전 상태가 남아 있을 수 있다 — 존재하면 "공짜 기준선".
   감지만 수행하고 존재 여부를 리포트.
+- **Prefetch 정밀 파싱**: `.pf` 본체를 파싱해 실행 파일명·실행 횟수·
+  마지막 실행 시각까지 복원 (v23/26/30; Win10+ MAM 압축은 Windows에서
+  ntdll로 해제 시도, 실패 시 `compressed_unparsed`로 명시).
+- **EVTX 청크 해제**: `.evtx`의 deflate 압축 청크를 풀어 binxml 스트림을
+  복원 — 이벤트 데이터 문자열(경로·계정·인쇄 작업명)이 UTF-16LE로
+  보존되어 문자열 수율이 크게 오른다. 이벤트 ID 수준의 완전 파싱은
+  별도 도구(chainsaw 등) 영역임을 명시.
+
+### 4.3b 삭제 파일 카빙 + USN 저널 (`raidwatch carve`, `raidwatch journal`)
+
+- **`carve`**: $MFT 덤프(이미징 도구/섀도 카피로 확보)를 파싱해 삭제
+  레코드를 나열하고, resident `$DATA` 페이로드(소형 파일은 레코드 안에
+  본문 전체)를 복구한다 — Temp 임시 목록 파일 카빙의 실체. 추가로
+  `$STANDARD_INFORMATION`과 `$FILE_NAME` 시각 불일치(`si_fn_mismatch`)를
+  플래그 — 타임스톰프 도구가 $SI만 고치고 $FN을 놓치는 고전적 패턴.
+- **`journal`**: NTFS USN 저널(fsutil 또는 CSV export)을 파싱해 집행
+  창의 file_create/file_delete/rename/security_change 이벤트를
+  재구성 — 수사관 도구가 만들고 지운 산출물, 로그 청소 흔적의
+  고해상도 기록. 저널 wrap/비활성화로 생긴 공백 자체도 기록한다.
 
 ### 4.4 리포트
 
@@ -259,11 +286,13 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M2 | 프로필 기반 독립 스캔(속성 선별) + hit 목록 + 영장 해석별 분류 | ✅ `raidwatch scan` |
 | M3 | 사후 diff: 기준선 vs 재인벤토리 비교 + 변경점 분류 리포트 | ✅ `raidwatch diff` (열람 `accessed` 분류 + 백데이팅 식재 탐지) |
 | M4 | 수사기관 목록 파싱 + 해시 대조 + out_of_scope 추출 + 검증 리포트 | ✅ `raidwatch verify` (OCR 손상 경로 퍼지 매칭 포함) |
-| M4a | 원본 목록 회수: 스풀/Temp/휴지통 수집 + 문자열 추출 | ✅ `raidwatch sources` (미할당 카빙 제외) |
-| M4b | 수사관 행위 재구성: prefetch/recent/evtx/hive/VSS 감지 | ✅ `raidwatch artifacts` (evtx/hive 파싱은 수집+문자열 수준) |
-| M5 | 내용 검색(텍스트 추출/키워드)으로 선별 조건 재현 강화 | 미구현 |
-| M6 | watcher: USN/Sysmon 기반 집행 중 감시 + 종료 기록 | 🔶 `raidwatch watch` — 폴링 스냅샷 + 프로세스 등장/종료 이벤트(포터블), USN/Sysmon 네이티브는 미구현 |
-| M7 | 폐기·환부 청구용 무관 정보 목록 + 절차 기록 패키지 | 미구현 |
+| M4a | 원본 목록 회수: 스풀/Temp/휴지통 수집 + 문자열 추출 | ✅ `raidwatch sources` |
+| M4b | 수사관 행위 재구성: prefetch 정밀 파싱/evtx 청크 해제/hive 문자열/VSS 감지 | ✅ `raidwatch artifacts` |
+| M4c | 삭제 파일 카빙: $MFT 덤프 파싱 + resident 데이터 복구 + $SI/$FN 타임스톰프 불일치 탐지 | ✅ `raidwatch carve` (비-resident/미할당 클러스터는 미구현) |
+| M4d | USN 저널 리플레이: 집행 중 파일 생성·삭제·이름변경 이력 | ✅ `raidwatch journal` (fsutil 또는 CSV export 입력) |
+| M5 | 내용 검색(텍스트 추출/키워드)으로 선별 조건 재현 강화 | ✅ `scan`에 `in: content` — txt/Office/PDF/HWP·HWPX/zip 재귀 (best-effort 추출, `extract_failed` 명시) |
+| M6 | watcher: USN/Sysmon 기반 집행 중 감시 + 종료 기록 | 🔶 `raidwatch watch` — 폴링 스냅샷 + 프로세스 등장/종료 이벤트(포터블); USN은 `journal`으로 사후 커버, Sysmon/ETW 네이티브는 미구현 |
+| M7 | 폐기·환부 청구용 무관 정보 목록 + 절차 기록 패키지 | ✅ `raidwatch package` — 범위 초과/부재/백데이팅 목록 + 타임라인 + 해시 인덱스 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.

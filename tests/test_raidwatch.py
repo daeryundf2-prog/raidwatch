@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import struct
 import tempfile
 import unittest
 from pathlib import Path
@@ -416,6 +417,285 @@ class CliTests(unittest.TestCase):
             report = json.loads((diff_out / "diff.json").read_text(encoding="utf-8"))
             self.assertEqual(report["summary"]["content_changed"], 1)
             self.assertTrue((diff_out / "report.md").exists())
+
+
+class TextExtractTests(unittest.TestCase):
+    def test_plain_text_cp949(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.text_extract import extract_text
+
+            f = _write(Path(td) / "memo.txt", "계약서 압수 대상".encode("cp949"))
+            self.assertIn("압수", extract_text(f))
+
+    def test_docx_xml_extraction(self) -> None:
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.text_extract import extract_text
+
+            docx = Path(td) / "doc.docx"
+            with zipfile.ZipFile(docx, "w") as zf:
+                zf.writestr(
+                    "word/document.xml",
+                    "<w:doc><w:t>비밀계약 문서 본문</w:t></w:doc>",
+                )
+            self.assertIn("비밀계약", extract_text(docx))
+
+    def test_pdf_stream_strings(self) -> None:
+        import zlib
+
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.text_extract import extract_text
+
+            payload = zlib.compress(b"BT (seized-evidence-list-2024) Tj ET")
+            pdf = _write(
+                Path(td) / "list.pdf",
+                b"%PDF-1.4\nstream\n" + payload + b"\nendstream\n",
+            )
+            self.assertIn("seized-evidence", extract_text(pdf))
+
+    def test_zip_member_recursion(self) -> None:
+        import zipfile
+
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.text_extract import extract_text
+
+            zpath = Path(td) / "archive.zip"
+            with zipfile.ZipFile(zpath, "w") as zf:
+                zf.writestr("inner/memo.txt", "내부 문서 증거")
+            self.assertIn("증거", extract_text(zpath))
+
+    def test_unsupported_returns_none(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.text_extract import extract_text
+
+            f = _write(Path(td) / "img.jpg", b"\xff\xd8\xff")
+            self.assertIsNone(extract_text(f))
+
+
+class ContentScanTests(unittest.TestCase):
+    def test_content_keyword_produces_hit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            _write(root / "plain.bin", b"binary")
+            _write(root / "memo.txt", "본문에 은밀한계약 키워드".encode("utf-8"))
+
+            profile_path = Path(td) / "p.json"
+            profile_path.write_text(
+                json.dumps(
+                    {
+                        "criteria": {
+                            "keywords": [
+                                {"term": "은밀한계약", "in": "content"}
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            profile = load_profile(profile_path)
+            result = scan_target(root, profile)
+            self.assertEqual(result["summary"]["content_extracted"], 1)
+            hits = {h["path"]: h for h in result["hits"]}
+            self.assertIn("memo.txt", hits)
+            self.assertNotIn("plain.bin", hits)
+
+
+class MftTests(unittest.TestCase):
+    @staticmethod
+    def _record(
+        name: str,
+        data: bytes,
+        *,
+        deleted: bool,
+        si_mtime: int = 133000000000000000,
+        fn_mtime: int = 133000000000000000,
+    ) -> bytes:
+        """Build a minimal 1024-byte FILE record (valid fixup)."""
+        rec = bytearray(1024)
+        rec[0:4] = b"FILE"
+        struct.pack_into("<HH", rec, 4, 0x30, 3)  # usa off, count
+        struct.pack_into("<HHH", rec, 0x30, 0xAAAA, 0x1111, 0x2222)
+        rec[510:512] = b"\xaa\xaa"  # pre-fixup sector tails
+        rec[1022:1024] = b"\xaa\xaa"
+        struct.pack_into("<H", rec, 0x14, 0x38)  # first attr
+        struct.pack_into("<H", rec, 0x16, 0 if deleted else 1)  # flags
+
+        off = 0x38
+
+        def put_attr(atype: int, content: bytes) -> None:
+            nonlocal off
+            hdr = 24
+            struct.pack_into("<II", rec, off, atype, hdr + len(content))
+            rec[off + 8] = 0  # resident
+            struct.pack_into("<IH", rec, off + 16, len(content), hdr)
+            rec[off + hdr : off + hdr + len(content)] = content
+            off += hdr + len(content)
+
+        si = struct.pack("<4Q", si_mtime, si_mtime, si_mtime, si_mtime) + b"\0" * 24
+        put_attr(0x10, si)
+
+        nb = name.encode("utf-16-le")
+        fn = (
+            struct.pack("<Q", 5)
+            + struct.pack("<4Q", fn_mtime, fn_mtime, fn_mtime, fn_mtime)
+            + struct.pack("<QQ", len(data), len(data))
+            + struct.pack("<II", 0, 0)
+            + bytes([len(name), 1])
+            + nb
+        )
+        put_attr(0x30, fn)
+        put_attr(0x80, data)
+        struct.pack_into("<I", rec, off, 0xFFFFFFFF)
+        return bytes(rec)
+
+    def test_parse_deleted_and_timestomp_flag(self) -> None:
+        import struct as _s  # noqa: F401  (kept for symmetry)
+
+        from raidwatch.mft import parse_mft
+
+        deleted = self._record("temp_list.csv", b"path,hash\n", deleted=True)
+        stomped = self._record(
+            "planted.txt", b"x", deleted=False,
+            si_mtime=132000000000000000, fn_mtime=133000000000000000,
+        )
+        entries = parse_mft(deleted + stomped)
+        self.assertEqual(len(entries), 2)
+        self.assertTrue(entries[0]["deleted"])
+        self.assertEqual(entries[0]["name"], "temp_list.csv")
+        self.assertFalse(entries[0]["si_fn_mismatch"])
+        self.assertTrue(entries[1]["si_fn_mismatch"])
+
+    def test_carve_recovers_resident_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.mft import carve_mft
+
+            dump = Path(td) / "mft.bin"
+            dump.write_bytes(
+                self._record("목록.csv", "경로,해시\n".encode("utf-8"), deleted=True)
+            )
+            report = carve_mft(dump, Path(td) / "out")
+            self.assertEqual(report["summary"]["resident_recovered"], 1)
+            rec = report["resident_recovered"][0]
+            self.assertEqual(rec["name"], "목록.csv")
+            self.assertIn("해시", Path(rec["recovered_to"]).read_text("utf-8"))
+
+
+class JournalTests(unittest.TestCase):
+    def test_parse_usn_csv(self) -> None:
+        from raidwatch.journal import parse_usn_csv
+
+        csv_text = (
+            "File name,Reason,Time stamp,USN\n"
+            "evidence_list.xlsx,0x00000100,0x01DAC00000000000,0x1234\n"
+            "temp_report.csv,0x00000200,0x01DAC00000000001,0x1235\n"
+        )
+        events = parse_usn_csv(csv_text)
+        self.assertEqual(len(events), 2)
+        self.assertIn("file_create", events[0]["reasons"])
+        self.assertIn("file_delete", events[1]["reasons"])
+        self.assertIsNotNone(events[0]["timestamp_utc"])
+
+    def test_replay_journal_filters_and_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            from raidwatch.journal import replay_journal
+
+            csv_path = Path(td) / "j.csv"
+            csv_path.write_text(
+                "File name,Reason,Time stamp,USN\n"
+                "a.txt,0x00000200,0x01DAC00000000000,0x1\n",
+                encoding="utf-8",
+            )
+            report = replay_journal(Path(td) / "out", csv_path=csv_path)
+            self.assertEqual(report["summary"]["events_parsed"], 1)
+            self.assertEqual(
+                report["summary"]["deletes_renames_security_changes"], 1
+            )
+
+
+class PfparseTests(unittest.TestCase):
+    def test_v30_prefetch(self) -> None:
+        import struct
+
+        from raidwatch.pfparse import parse_prefetch
+
+        data = bytearray(0x200)
+        data[0:4] = b"SCCA"
+        struct.pack_into("<I", data, 4, 30)  # Win10
+        data[0x10:0x4C] = "FTKIMAGER.EXE".encode("utf-16-le").ljust(60, b"\0")
+        struct.pack_into("<Q", data, 0x80, 133600000000000000)  # last run
+        struct.pack_into("<I", data, 0xD0, 7)  # run count
+        pf = parse_prefetch(bytes(data))
+        self.assertEqual(pf["status"], "ok")
+        self.assertEqual(pf["exe_name"], "FTKIMAGER.EXE")
+        self.assertEqual(pf["run_count"], 7)
+        self.assertEqual(len(pf["last_runs_utc"]), 1)
+
+    def test_mam_compressed_falls_back(self) -> None:
+        from raidwatch.pfparse import parse_prefetch
+
+        pf = parse_prefetch(b"MAM\x04" + b"\0" * 32)
+        self.assertEqual(pf["status"], "compressed_unparsed")
+
+
+class EvtxTests(unittest.TestCase):
+    def test_chunk_decompression_and_strings(self) -> None:
+        import zlib
+
+        from raidwatch.evtx import decompress_chunks, evtx_strings
+
+        payload = zlib.compress("Print Job 307 목록.xlsx".encode("utf-16-le"))
+        data = bytearray(0x1000 + 0x200 + len(payload))
+        data[0:8] = b"ElfFile\x00"
+        data[0x1000 : 0x1000 + 8] = b"ElfChnk\x00"
+        data[0x1200 : 0x1200 + len(payload)] = payload
+
+        blob = decompress_chunks(bytes(data))
+        self.assertIn("Print Job".encode("utf-16-le"), blob)
+
+        evtx = Path(tempfile.mkdtemp()) / "PrintService.evtx"
+        evtx.write_bytes(bytes(data))
+        strings = evtx_strings(evtx)
+        self.assertTrue(any("Print Job" in s for s in strings))
+
+
+class PackageTests(unittest.TestCase):
+    def test_package_builds_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            case = Path(td) / "case"
+            verify_dir = case / "verify"
+            verify_dir.mkdir(parents=True)
+            (verify_dir / "verify.json").write_text(
+                json.dumps(
+                    {
+                        "items": [
+                            {
+                                "claimed_path": "photos/img001.jpg",
+                                "claimed_sha256": "a" * 64,
+                                "status": "verified",
+                                "scope_verdict": "out_of_scope",
+                                "notes": [],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (verify_dir / "manifest.json").write_text(
+                json.dumps({"command": "verify", "finished_utc": utc_now_iso()}),
+                encoding="utf-8",
+            )
+
+            from raidwatch.package import build_package
+
+            out = Path(td) / "package"
+            result = build_package(case, out)
+            self.assertEqual(result["summary"]["disposal_items"], 1)
+            self.assertTrue((out / "폐기청구목록.md").exists())
+            self.assertTrue((out / "절차기록.md").exists())
+            self.assertTrue((out / "index.json").exists())
+            body = (out / "폐기청구목록.md").read_text(encoding="utf-8")
+            self.assertIn("photos/img001.jpg", body)
 
 
 if __name__ == "__main__":

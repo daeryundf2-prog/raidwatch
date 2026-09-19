@@ -46,6 +46,17 @@ python -m raidwatch sources /path/to/seized-pc \
 python -m raidwatch artifacts /path/to/seized-pc \
   --out case/<case_id>/artifacts --since 2026-09-19
 
+# 6. 삭제 파일 카빙 — $MFT 덤프에서 삭제 항목 + resident 본문 복구
+python -m raidwatch carve --mft mft-dump.bin --out case/<case_id>/carve
+
+# 7. USN 저널 리플레이 — 수사관이 만들고 지운 파일 이력
+python -m raidwatch journal --csv usn-export.csv \
+  --out case/<case_id>/journal --since 2026-09-19
+
+# 8. 법적 검토 패키지 — 폐기청구 목록 + 절차 기록 묶음
+python -m raidwatch package --case case/<case_id> \
+  --out case/<case_id>/package
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -62,6 +73,10 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 백데이팅을 잡는다 | `diff` | 집행 중 새 파일인데 mtime이 과거 = timestomp 식재 의심 |
 | VSS를 기준선으로 쓴다 | `artifacts` | 윈도우 섀도 카피가 이미 집행 전 상태를 찍어뒀을 수 있다 |
 | 수사 프로세스를 본다 | `watch` | 패스마다 프로세스 스냅샷 → 수사 도구 등장/종료 기록 |
+| 삭제 파일을 되살린다 | `carve` | $MFT 레코드 안 resident 본문 + $SI/$FN 불일치로 timestomp 탐지 |
+| 저널이 전부 기억한다 | `journal` | USN 저널이 수사관의 파일 생성·삭제·이름변경을 다 기록한다 |
+| 파일 안을 들여다본다 | `scan` | `in: content` 키워드 → txt/Office/PDF/HWP까지 내용 선별 재현 |
+| 판사에게 줄 묶음을 만든다 | `package` | 범위 초과 목록+타임라인+해시 인덱스 → 폐기청구 부속 문서 |
 
 ## 검증 시 두 가지 역발상
 
@@ -82,7 +97,10 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
   "case_id": "2026-xx-xxxx",
   "warrant": { "issued": "2026-09-15", "scope_note": "영장 별지 조건" },
   "criteria": {
-    "keywords": [{ "term": "계약서" }],
+    "keywords": [
+      { "term": "계약서" },
+      { "term": "비밀회계", "in": "content" }
+    ],
     "extensions": [".hwp", ".docx", ".pdf"],
     "filename_patterns": ["*회계*"],
     "date_ranges": [{ "field": "mtime", "from": "2025-01-01", "to": "2026-09-19" }],
@@ -95,6 +113,11 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 범위 판정은 이중으로 한다: `in_scope`(지정된 모든 조건 AND = 좁은 해석),
 `borderline`(일부 조건만 OR = 넓은 해석), `out_of_scope`(어느 해석에도
 불해당 → 폐기 청구 근거).
+
+`"in": "content"` 키워드는 파일 본문에서 검색한다 — 지원 형식은
+txt/csv/log/eml 등 텍스트(UTF-8·CP949·UTF-16 폴백), docx/xlsx/pptx,
+HWPX, legacy HWP(내장 CFB 파서), PDF 텍스트 스트림, zip 멤버 재귀.
+추출 실패 파일은 `extract_failed`로 표시되며 조용히 매칭하지 않는다.
 
 ## 설계 원칙
 

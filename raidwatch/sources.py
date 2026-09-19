@@ -33,12 +33,8 @@ _ASCII_RUN = re.compile(rb"[\x20-\x7e]{6,}")
 _UTF16_RUN = re.compile(r"[ -\u007e가-힯ㄱ-ㅣ]{6,}")
 
 
-def extract_strings(path: Path, limit: int = 2000) -> list[str]:
-    """Pull printable ASCII and UTF-16LE runs (incl. Hangul) from a file."""
-    try:
-        data = path.read_bytes()
-    except OSError:
-        return []
+def extract_strings_bytes(data: bytes, limit: int = 2000) -> list[str]:
+    """Pull printable ASCII and UTF-16LE runs (incl. Hangul) from bytes."""
     out: list[str] = []
     seen = set()
     for raw in _ASCII_RUN.findall(data):
@@ -55,6 +51,15 @@ def extract_strings(path: Path, limit: int = 2000) -> list[str]:
         if len(out) >= limit:
             break
     return out[:limit]
+
+
+def extract_strings(path: Path, limit: int = 2000) -> list[str]:
+    """Pull printable ASCII and UTF-16LE runs (incl. Hangul) from a file."""
+    try:
+        data = path.read_bytes()
+    except OSError:
+        return []
+    return extract_strings_bytes(data, limit=limit)
 
 
 def _reason_for(rel: str, mtime_ns: int, since_ns: int | None) -> str | None:

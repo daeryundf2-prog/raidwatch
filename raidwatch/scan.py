@@ -7,6 +7,9 @@ from pathlib import Path
 from .common import ns_to_iso, write_json, write_manifest
 from .inventory import iter_fs, record_for
 from .profile import evaluate
+from .text_extract import SUPPORTED_EXTS, extract_text
+
+DEFAULT_MAX_CONTENT_BYTES = 32 * 1024 * 1024
 
 
 def scan_target(
@@ -16,6 +19,7 @@ def scan_target(
     hash_files: bool = True,
     max_hash_bytes: int | None = None,
     follow_symlinks: bool = False,
+    max_content_bytes: int = DEFAULT_MAX_CONTENT_BYTES,
 ) -> dict:
     """Evaluate every filesystem entry against the profile.
 
@@ -24,6 +28,9 @@ def scan_target(
     broad OR only).
     """
     root = root.resolve()
+    content_kws = [
+        k for k in profile["criteria"]["keywords"] if k["in"] == "content"
+    ]
     hits = []
     summary = {
         "evaluated": 0,
@@ -33,6 +40,9 @@ def scan_target(
         "borderline": 0,
         "errors": 0,
         "skipped_status": {},
+        "content_extracted": 0,
+        "content_extract_failed": 0,
+        "content_keyword_terms": len(content_kws),
     }
     for rel, abs_path, st, kind in iter_fs(root, follow_symlinks=follow_symlinks):
         if kind == "dir":
@@ -47,7 +57,23 @@ def scan_target(
         )
         if rec.status in ("stat_error", "read_error"):
             summary["errors"] += 1
-        result = evaluate(rec.as_dict(), profile)
+        item = rec.as_dict()
+        item["content"] = None
+        extract_failed = False
+        if (
+            content_kws
+            and st is not None
+            and st.st_size <= max_content_bytes
+            and abs_path.suffix.lower() in SUPPORTED_EXTS
+        ):
+            text = extract_text(abs_path, max_bytes=max_content_bytes)
+            if text is not None:
+                item["content"] = text
+                summary["content_extracted"] += 1
+            else:
+                extract_failed = True
+                summary["content_extract_failed"] += 1
+        result = evaluate(item, profile)
         if result["excluded"]:
             summary["excluded"] += 1
             continue
@@ -65,7 +91,9 @@ def scan_target(
                 "sha256": rec.sha256,
                 "matched": result["matched"],
                 "verdict": result["verdict"],
-                "status": rec.status,
+                "status": (
+                    "extract_failed" if extract_failed else rec.status
+                ),
             }
         )
     return {"hits": hits, "summary": summary}

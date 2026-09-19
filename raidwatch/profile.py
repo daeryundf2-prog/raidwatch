@@ -154,8 +154,6 @@ def evaluate(item: dict, profile: dict) -> dict:
         name_hit = any(_kw_match(k, name, rel_l) for k in name_kws)
         if name_hit:
             groups["keywords"] = True
-        elif content_kws and not name_kws:
-            groups["keywords"] = None  # content-only criteria, not evaluated
         elif content_kws:
             groups["keywords"] = None if item.get("content") is None else bool(
                 any(

@@ -8,8 +8,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TOOL_NAME = "raidwatch"
-TOOL_VERSION = "0.3.0"
+TOOL_VERSION = "0.4.0"
 _CHUNK = 1024 * 1024
+_FILETIME_EPOCH_NS = 116444736000000000  # 1601-01-01 in 100ns units *100
 
 
 def utc_now_iso() -> str:
@@ -20,6 +21,17 @@ def ns_to_iso(ns: int) -> str:
     return datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc).isoformat(
         timespec="seconds"
     )
+
+
+def filetime_to_iso(value: int) -> str | None:
+    """Windows FILETIME (100ns since 1601) → ISO; None for zero/invalid."""
+    if value <= 0:
+        return None
+    try:
+        ns = (value - _FILETIME_EPOCH_NS) * 100
+        return ns_to_iso(ns)
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def iso_to_ns(value: str) -> int:
