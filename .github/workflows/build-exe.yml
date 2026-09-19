@@ -33,7 +33,7 @@ jobs:
       - name: Smoke test
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            ./dist/raidwatch.exe --help > $null && echo "exe OK"
+            ./dist/raidwatch.exe --help > /dev/null && echo "exe OK"
           else
             ./dist/raidwatch --help > /dev/null && echo "exe OK"
           fi
