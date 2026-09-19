@@ -57,6 +57,17 @@ python -m raidwatch journal --csv usn-export.csv \
 python -m raidwatch package --case case/<case_id> \
   --out case/<case_id>/package
 
+# 9. 현장 배포 키트 — 의뢰인 PC로 보내서 분석 산출물만 회수
+python -m raidwatch bundle --out raidwatch-kit \
+  --profile profile.json --seized seized-list.txt --baseline inv.db
+#   → raidwatch-kit/ (raidwatch.pyz + inputs/ + RUN.bat/RUN.sh + README)
+#   USB·메일로 전달 → 의뢰인이 RUN 실행 → raidwatch-out/ 반환
+
+# 10. 원격 수거 — SSH로 키트 전송·실행·결과 회수 + 해시 검증
+python -m raidwatch collect --host user@client-pc \
+  --kit raidwatch-kit --out case/<case_id>/collected \
+  --remote-root 'C:\'
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -77,6 +88,7 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 저널이 전부 기억한다 | `journal` | USN 저널이 수사관의 파일 생성·삭제·이름변경을 다 기록한다 |
 | 파일 안을 들여다본다 | `scan` | `in: content` 키워드 → txt/Office/PDF/HWP까지 내용 선별 재현 |
 | 판사에게 줄 묶음을 만든다 | `package` | 범위 초과 목록+타임라인+해시 인덱스 → 폐기청구 부속 문서 |
+| 프로그램을 보내서 결과만 받는다 | `bundle`/`field`/`collect` | zipapp 단일 파일 키트 → 의뢰인 PC에서 분석 → 산출물 zip+해시만 회수 |
 
 ## 검증 시 두 가지 역발상
 

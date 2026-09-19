@@ -9,14 +9,17 @@ import tempfile
 from pathlib import Path
 
 from .artifacts import collect_artifacts
+from .bundle import build_bundle
 from .common import write_json, write_manifest
 from .db import Inventory
 from .diff import run_diff
+from .field import run_field
 from .inventory import build_inventory
 from .journal import replay_journal
 from .mft import carve_mft
 from .package import build_package
 from .profile import ProfileError, load_profile
+from .remote import collect_remote
 from .scan import run_scan
 from .sources import collect_sources
 from .verify import run_verify
@@ -208,6 +211,51 @@ def cmd_package(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bundle(args: argparse.Namespace) -> int:
+    result = build_bundle(
+        Path(args.out).expanduser(),
+        profile=Path(args.profile).expanduser() if args.profile else None,
+        seized=Path(args.seized).expanduser() if args.seized else None,
+        baseline=Path(args.baseline).expanduser() if args.baseline else None,
+    )
+    _print(result)
+    return 0
+
+
+def cmd_field(args: argparse.Namespace) -> int:
+    report = run_field(
+        Path(args.root).expanduser(),
+        Path(args.inputs).expanduser(),
+        Path(args.out).expanduser(),
+        hash_files=not args.no_hash,
+    )
+    _print(
+        {
+            "steps": report["steps"],
+            "results_zip": report["results_zip"],
+            "results_zip_sha256": report["results_zip_sha256"],
+        }
+    )
+    return 0
+
+
+def cmd_collect(args: argparse.Namespace) -> int:
+    try:
+        report = collect_remote(
+            args.host,
+            Path(args.kit).expanduser(),
+            Path(args.out).expanduser(),
+            remote_dir=args.remote_dir,
+            remote_root=args.remote_root,
+            port=args.port,
+        )
+    except OSError as exc:
+        print(f"collect error: {exc}", file=sys.stderr)
+        return 2
+    _print(report)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="raidwatch",
@@ -315,6 +363,38 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--case", required=True, help="case dir holding raidwatch outputs")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_package)
+
+    p = sub.add_parser(
+        "bundle",
+        help="build a self-contained field kit (raidwatch.pyz + inputs + RUN scripts)",
+    )
+    p.add_argument("--out", required=True, help="kit output directory")
+    p.add_argument("--profile", help="warrant profile JSON to embed")
+    p.add_argument("--seized", help="seized list to embed")
+    p.add_argument("--baseline", help="baseline inventory.db to embed")
+    p.set_defaults(func=cmd_bundle)
+
+    p = sub.add_parser(
+        "field",
+        help="run the kit pipeline locally (what RUN.bat/RUN.sh invoke)",
+    )
+    p.add_argument("--root", required=True, help="analysis root on this machine")
+    p.add_argument("--inputs", required=True, help="kit inputs dir (may be empty)")
+    p.add_argument("--out", required=True, help="output dir for raidwatch-out")
+    p.add_argument("--no-hash", action="store_true")
+    p.set_defaults(func=cmd_field)
+
+    p = sub.add_parser(
+        "collect",
+        help="deploy a kit to a remote machine over SSH and pull results back",
+    )
+    p.add_argument("--host", required=True, help="user@host (key-based ssh auth)")
+    p.add_argument("--kit", required=True, help="local kit dir built by `bundle`")
+    p.add_argument("--out", required=True, help="local dir for downloaded results")
+    p.add_argument("--remote-dir", default="raidwatch-kit")
+    p.add_argument("--remote-root", help="analysis root on the remote machine")
+    p.add_argument("--port", type=int, default=None)
+    p.set_defaults(func=cmd_collect)
 
     return parser
 

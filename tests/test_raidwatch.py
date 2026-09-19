@@ -845,5 +845,78 @@ class RegressionTests(unittest.TestCase):
             self.assertEqual(result["hits"], [])
 
 
+class BundleFieldTests(unittest.TestCase):
+    def test_bundle_builds_runnable_kit(self) -> None:
+        import subprocess
+        import sys
+
+        from raidwatch.bundle import build_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            kit = build_bundle(Path(td) / "kit")
+            kit_dir = Path(kit["kit_dir"])
+            self.assertTrue((kit_dir / "raidwatch.pyz").is_file())
+            self.assertTrue((kit_dir / "RUN.bat").is_file())
+            self.assertTrue((kit_dir / "RUN.sh").is_file())
+            # the pyz must be a runnable zipapp
+            r = subprocess.run(
+                [sys.executable, str(kit_dir / "raidwatch.pyz"), "--help"],
+                capture_output=True, text=True, timeout=60,
+            )
+            self.assertEqual(r.returncode, 0)
+            self.assertIn("raidwatch", r.stdout)
+
+    def test_field_runs_applicable_steps_and_archives(self) -> None:
+        from raidwatch.field import run_field
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            _write(
+                root / "Windows" / "System32" / "spool" / "PRINTERS" / "j.SPL",
+                "seized list 원본".encode("utf-8"),
+            )
+            inputs = Path(td) / "inputs"
+            inputs.mkdir()
+            (inputs / "profile.json").write_text(
+                json.dumps(RaidwatchFixture.profile_dict()), encoding="utf-8"
+            )
+            (inputs / "seized.txt").write_text(
+                "docs/contract.hwp\n", encoding="utf-8"
+            )
+
+            out = Path(td) / "raidwatch-out"
+            report = run_field(root, inputs, out)
+            steps = {s["step"]: s["status"] for s in report["steps"]}
+            self.assertEqual(steps["sources"], "ok")
+            self.assertEqual(steps["artifacts"], "ok")
+            self.assertEqual(steps["scan"], "ok")
+            self.assertEqual(steps["verify"], "ok")
+            self.assertTrue((out / "raidwatch-results.zip").is_file())
+            self.assertTrue((out / "SHA256SUMS.txt").is_file())
+            # every sums entry must match the real file hash
+            from raidwatch.common import sha256_file
+
+            bad = []
+            for line in (out / "SHA256SUMS.txt").read_text().splitlines():
+                digest, rel = line.split(None, 1)
+                if sha256_file(out / rel.strip()) != digest:
+                    bad.append(rel)
+            self.assertEqual(bad, [])
+
+    def test_field_survives_missing_inputs_and_errors(self) -> None:
+        from raidwatch.field import run_field
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            _write(root / "a.txt", b"data")
+            report = run_field(root, Path(td) / "no-inputs", Path(td) / "out")
+            steps = {s["step"]: s["status"] for s in report["steps"]}
+            self.assertEqual(steps["sources"], "ok")
+            self.assertEqual(steps["artifacts"], "ok")
+            self.assertNotIn("scan", steps)
+            self.assertNotIn("verify", steps)
+
+
 if __name__ == "__main__":
     unittest.main()
