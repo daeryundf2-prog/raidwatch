@@ -30,6 +30,7 @@ from .audit import run_keyword_audit
 from .boundary import run_boundary
 from .common import sha256_file, utc_now_iso, write_json, write_manifest
 from .containers import sniff_containers
+from .leftover import run_leftovers
 from .window import scan_window
 from .db import Inventory
 from .diff import run_diff
@@ -420,6 +421,20 @@ def run_field(
                 root, steps_dir / "window", since_ns=since_ns,
                 progress=lambda n, h: print(
                     f"  window: {n} scanned, {h} hits", flush=True),
+            ),
+        )
+
+    # Investigators' own work product left behind: their itemized
+    # list PDF / export archive created in the raid window, recycle
+    # bin entries, and signature files the journal saw being deleted.
+    # Finding these beats OCR — it IS their authoritative output.
+    if since_ns is not None:
+        _run(
+            "leftovers",
+            lambda: run_leftovers(
+                [root], steps_dir / "leftovers",
+                since_ns=since_ns,
+                journal=steps_dir / "journal" / "journal.json",
             ),
         )
 

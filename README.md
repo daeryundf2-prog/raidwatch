@@ -140,6 +140,11 @@ python -m raidwatch window --root C:\ --since "2026-09-19 14:30" \
 #     복원 + 현장 봉인 해시와 자동 대조 (join-report.json 기록)
 python -m raidwatch join raidwatch-results-parts/
 
+# 21. 수사팀이 두고 간 산출물 회수 — 전자정보 목록 PDF/선별 zip을
+#     창 안에서 찾아 복사+해시 (휴지통 $I/$R 복원·저널 삭제 추적 포함)
+python -m raidwatch leftovers --root C:\ --since "2026-09-19 14:30" \
+  --out case/<case_id>/leftovers
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -177,6 +182,7 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 목록을 안 줘도 날짜로 잡는다 | `window` | 집행일 이후 생성·수정·열람 파일 전수 — 목록 없이도 "그날 뭘 했는지" |
 | 변호인이 답을 대신 쓴다 | `CONFIG.txt` | 키트에 프리필 → 의뢰인은 더블클릭+UAC 예뿐, 결과는 자동 반송 |
 | 결과가 커도 메일로 간다 | `field` 자동 | 결과 zip이 2GB 초과 → 지메일 첨부 단위(20MB)로 자동 분할 + JOIN.bat 복원 |
+| 수사팀의 산출물을 통째로 회수한다 | `leftovers` | 창 안의 전자정보 목록 PDF·선별 zip·컨테이너 탐지+복사+해시 — 휴지통 $I/$R 복원, 저널로 "만들고 지운" 파일 추적 |
 | 받는 쪽도 설치가 필요 없다 | `JOIN.bat` | 조각+SUMS+JOIN.bat를 한 폴더에 → 더블클릭 하나로 복원·조각별 검증·봉인 해시 대조·성공/실패 팝업 (Windows 기본 기능만 사용) |
 | 받은 조각을 봉인 해시로 검증한다 | `join` | 분할 파츠 재결합 → custody.txt의 현장 해시와 대조 → 손상 파츠 지목 |
 

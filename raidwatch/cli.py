@@ -400,6 +400,23 @@ def cmd_window(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_leftovers(args: argparse.Namespace) -> int:
+    from .common import iso_to_ns
+    from .leftover import run_leftovers
+
+    since_ns = iso_to_ns(args.since) if args.since else None
+    until_ns = iso_to_ns(args.until) if args.until else None
+    report = run_leftovers(
+        [Path(args.root).expanduser()],
+        Path(args.out).expanduser(),
+        since_ns=since_ns,
+        until_ns=until_ns,
+        journal=Path(args.journal).expanduser() if args.journal else None,
+    )
+    _print(report["summary"])
+    return 0
+
+
 def cmd_harden(args: argparse.Namespace) -> int:
     _print(build_harden(Path(args.out).expanduser()))
     return 0
@@ -722,6 +739,20 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("parts", help="folder containing the .001 .002 … parts")
     p.add_argument("--out", help="output zip path (default: inside parts dir)")
     p.set_defaults(func=cmd_join)
+
+    p = sub.add_parser(
+        "leftovers",
+        help="recover the search team's own work product left on the "
+             "machine — their list PDF / export archive, recycle-bin "
+             "entries, journal-logged deletions",
+    )
+    p.add_argument("--root", required=True)
+    p.add_argument("--since", help="raid start (e.g. 2026-09-19 14:30)")
+    p.add_argument("--until", help="window end (default: now)")
+    p.add_argument("--journal", help="journal.json from the same run "
+                   "(correlates created-then-deleted signature files)")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_leftovers)
 
     p = sub.add_parser("gui", help="office-side Tkinter front-end")
     p.set_defaults(func=cmd_gui)

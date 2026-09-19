@@ -1794,5 +1794,77 @@ class JoinTests(unittest.TestCase):
             self.assertIn(victim.name, rep["summary"]["bad_parts"])
 
 
+class LeftoversTests(unittest.TestCase):
+    def _fixture(self, td: str) -> Path:
+        import struct
+
+        base = Path(td) / "C"
+        desk = base / "Users" / "pc" / "Desktop"
+        desk.mkdir(parents=True)
+        (desk / "전자정보목록.pdf").write_bytes(b"%PDF-1.4 list")
+        (desk / "선별결과.zip").write_bytes(b"PK\x03\x04 archive")
+        old = desk / "normal.txt"
+        old.write_bytes(b"old")
+        os.utime(old, (1_000_000_000, 1_000_000_000))
+        # recycle bin: 압수물목록.hwp deleted inside the window
+        name = "C:\\Users\\pc\\Desktop\\압수물목록.hwp"
+        nb = name.encode("utf-16-le") + b"\x00\x00"
+        ft = 116444736000000000 + int(1_789_866_000 * 10_000_000)
+        i_data = struct.pack("<QQQI", 2, 999, ft, len(nb) // 2) + nb
+        bd = base / "$Recycle.Bin" / "S-1-5-21"
+        bd.mkdir(parents=True)
+        (bd / "$IABCDEF.hwp").write_bytes(i_data)
+        (bd / "$RABCDEF.hwp").write_bytes(b"deleted list content")
+        return base
+
+    def test_leftovers_recovers_work_product(self) -> None:
+        from raidwatch.common import iso_to_ns
+        from raidwatch.leftover import run_leftovers
+
+        with tempfile.TemporaryDirectory() as td:
+            base = self._fixture(td)
+            rep = run_leftovers(
+                [base], Path(td) / "out",
+                since_ns=iso_to_ns("2026-09-19 10:00"),
+                until_ns=iso_to_ns("2026-12-31"),
+            )
+            self.assertEqual(rep["summary"]["live_hits"], 2)
+            names = {h["path"] for h in rep["live_files"]}
+            self.assertTrue(any("전자정보목록" in n for n in names))
+            self.assertEqual(rep["summary"]["recycle_bin_entries"], 1)
+            b = rep["recycle_bin"][0]
+            self.assertEqual(b["category"], "bin_list_or_container")
+            self.assertIn("압수물목록", b["original_path"])
+            self.assertTrue(b["copied"].startswith("bin_"))
+            self.assertEqual(
+                (Path(td) / "out" / "files" / b["copied"]).read_bytes(),
+                b"deleted list content",
+            )
+
+    def test_leftovers_journal_deletion(self) -> None:
+        from raidwatch.common import iso_to_ns
+        from raidwatch.leftover import run_leftovers
+
+        with tempfile.TemporaryDirectory() as td:
+            j = Path(td) / "journal.json"
+            j.write_text(json.dumps({"events": [{
+                "file_name": "선별결과.zip",
+                "reasons": ["file_delete", "close"],
+                "timestamp_utc": "2026-09-19T03:00:00Z",
+            }, {
+                "file_name": "ordinary.tmp",
+                "reasons": ["file_delete"],
+                "timestamp_utc": "2026-09-19T03:05:00Z",
+            }]}))
+            rep = run_leftovers(
+                [Path(td)], Path(td) / "out",
+                since_ns=iso_to_ns("2026-09-19 00:00"),
+                until_ns=iso_to_ns("2026-12-31"),
+                journal=j,
+            )
+            self.assertEqual(rep["summary"]["deleted_in_window"], 1)
+            self.assertIn("선별결과", rep["deleted_in_window"][0]["name"])
+
+
 if __name__ == "__main__":
     unittest.main()
