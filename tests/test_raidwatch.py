@@ -1735,5 +1735,54 @@ class SplitArchiveTests(unittest.TestCase):
             self.assertTrue(zip_p.exists())
 
 
+class JoinTests(unittest.TestCase):
+    def _make_parts(self, td: str) -> Path:
+        import zipfile
+
+        import raidwatch.field as fld
+
+        out = Path(td)
+        zip_p = out / fld.RESULTS_ZIP
+        import os
+
+        with zipfile.ZipFile(zip_p, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("b.bin", os.urandom(3000))
+        original = zip_p.read_bytes()
+        import hashlib
+
+        whole = hashlib.sha256(original).hexdigest()
+        old_t, old_p = fld._SPLIT_THRESHOLD, fld._PART_SIZE
+        fld._SPLIT_THRESHOLD, fld._PART_SIZE = 500, 700
+        try:
+            fld._maybe_split_archive(zip_p, out, whole)
+        finally:
+            fld._SPLIT_THRESHOLD, fld._PART_SIZE = old_t, old_p
+        self._original = original
+        return out / fld.PARTS_DIR
+
+    def test_join_verifies_ok(self) -> None:
+        from raidwatch.join import run_join
+
+        with tempfile.TemporaryDirectory() as td:
+            parts_dir = self._make_parts(td)
+            rep = run_join(parts_dir)
+            self.assertEqual(rep["summary"]["verdict"], "ok")
+            self.assertEqual(
+                Path(rep["output"]).read_bytes(), self._original)
+            self.assertFalse(rep["summary"]["bad_parts"])
+
+    def test_join_detects_corrupt_part(self) -> None:
+        from raidwatch.join import run_join
+
+        with tempfile.TemporaryDirectory() as td:
+            parts_dir = self._make_parts(td)
+            victim = sorted(
+                parts_dir.glob("raidwatch-results.zip.0*"))[1]
+            victim.write_bytes(b"corrupted" + victim.read_bytes()[9:])
+            rep = run_join(parts_dir)
+            self.assertEqual(rep["summary"]["verdict"], "mismatch")
+            self.assertIn(victim.name, rep["summary"]["bad_parts"])
+
+
 if __name__ == "__main__":
     unittest.main()

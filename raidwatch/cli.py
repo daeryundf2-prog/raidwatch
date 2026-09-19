@@ -367,6 +367,21 @@ def cmd_inquiry(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_join(args: argparse.Namespace) -> int:
+    from .join import run_join
+
+    try:
+        report = run_join(
+            Path(args.parts).expanduser(),
+            Path(args.out).expanduser() if args.out else None,
+        )
+    except ValueError as exc:
+        print(f"join error: {exc}", file=sys.stderr)
+        return 2
+    _print(report["summary"])
+    return 0 if report["summary"]["verdict"] != "mismatch" else 1
+
+
 def cmd_window(args: argparse.Namespace) -> int:
     from .common import iso_to_ns
     from .window import scan_window
@@ -698,6 +713,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--until", help="window end (default: now)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_window)
+
+    p = sub.add_parser(
+        "join",
+        help="reassemble emailed raidwatch-results-parts into the "
+             "results zip and verify it against the sealed hash",
+    )
+    p.add_argument("parts", help="folder containing the .001 .002 … parts")
+    p.add_argument("--out", help="output zip path (default: inside parts dir)")
+    p.set_defaults(func=cmd_join)
 
     p = sub.add_parser("gui", help="office-side Tkinter front-end")
     p.set_defaults(func=cmd_gui)

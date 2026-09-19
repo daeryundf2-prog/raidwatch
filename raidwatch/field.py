@@ -220,10 +220,13 @@ def _maybe_split_archive(
         f"결과물이 2GB를 넘어 이메일 첨부 단위(20MB)로 분할했습니다.\n"
         f"총 {len(parts)}개 조각입니다.\n\n"
         "보내는 쪽: 이 폴더의 .001 .002 ... 파일들을 이메일에 나눠 첨부\n"
-        "           (한 통에 1~2개씩). SHA256SUMS-parts.txt 도 같이 보내세요.\n"
+        "           (한 통에 1~2개씩). SHA256SUMS-parts.txt 와 JOIN.bat\n"
+        "           도 같이 보내 주세요 (작은 파일이라 한 통에 들어감).\n"
         "받는 쪽:   조각을 전부 한 폴더에 모은 뒤 JOIN.bat 더블클릭\n"
         "           (또는 join.sh 실행) → raidwatch-results.zip 복원\n"
-        "           → 표시되는 해시가 아래 값과 같은지 대조\n\n"
+        "           → 표시되는 해시가 아래 값과 같은지 대조.\n"
+        "           raidwatch가 있으면 'raidwatch join <폴더>' 로\n"
+        "           복원+검증을 한 번에 할 수 있습니다.\n\n"
         f"whole-zip sha256: {zip_sha256}\n",
         encoding="utf-8",
     )
