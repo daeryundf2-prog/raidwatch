@@ -1,0 +1,80 @@
+# raidwatch
+
+압수수색 **대응 측**(피압수자·변호인·기업 법무팀)을 위한 독립 검증 도구.
+수사기관의 선별 과정을 재현·검증·기록하여 범위 초과 압수와 증거 오염에
+대한 이의제기·배제 주장(형사소송법 §308-2)·환부 청구의 객관적 근거를 만든다.
+
+표준 라이브러리만 사용. 네트워크 통신 없음.
+
+## 세 가지 사용 시점
+
+| 시점 | 명령 | 역할 |
+|---|---|---|
+| 사전 (raid 이전) | `baseline`, `watch` | 내 PC 기준선 인벤토리+해시, 변경 감시 |
+| 집행 중 | `watch` (사전 설치 시) | 수사 도구 행위의 수동적 관찰 기록 |
+| 사후 | `scan`, `diff`, `verify` | 독립 재현 스캔, 전후 변경점 비교, 압수 목록 검증 |
+
+## 사용법
+
+```bash
+# 1. 사전: 기준선 생성 (평시에 실행)
+python -m raidwatch baseline /path/to/pc --out case/<case_id>/baseline
+
+# 2. 사후: 돌려받은 PC와 기준선 비교
+python -m raidwatch diff \
+  --baseline case/<case_id>/baseline/inventory.db \
+  --rescan /path/to/returned-pc \
+  --out case/<case_id>/diff
+
+# 3. 영장 조건으로 독립 재현 스캔
+python -m raidwatch scan /path --profile warrant-profile.json --out case/<case_id>/scan
+
+# 4. 수사기관이 교부한 선별 목록 검증 (json/csv/txt)
+python -m raidwatch verify \
+  --seized seized-list.txt \
+  --baseline case/<case_id>/baseline/inventory.db \
+  --profile warrant-profile.json \
+  --current-root /path/to/returned-pc \
+  --out case/<case_id>/verify
+
+# 감시 모드 (폴링 스냅샷, Ctrl+C 종료 시 watcher_stopped 기록)
+python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
+```
+
+## 영장 프로필 (warrant-profile.json)
+
+```json
+{
+  "profile_version": "1.0",
+  "case_id": "2026-xx-xxxx",
+  "warrant": { "issued": "2026-09-15", "scope_note": "영장 별지 조건" },
+  "criteria": {
+    "keywords": [{ "term": "계약서" }],
+    "extensions": [".hwp", ".docx", ".pdf"],
+    "filename_patterns": ["*회계*"],
+    "date_ranges": [{ "field": "mtime", "from": "2025-01-01", "to": "2026-09-19" }],
+    "path_include": ["Users/*/Documents/*"],
+    "path_exclude": ["Windows/*"]
+  }
+}
+```
+
+범위 판정은 이중으로 한다: `in_scope`(지정된 모든 조건 AND = 좁은 해석),
+`borderline`(일부 조건만 OR = 넓은 해석), `out_of_scope`(어느 해석에도
+불해당 → 폐기 청구 근거).
+
+## 설계 원칙
+
+- **관찰만 한다**: 수사 도구 차단·파일 은닉·자동 삭제 같은 능동 방해
+  기능은 없다 (증거인멸/공무집행방해 논점 방지).
+- **조용한 실패 금지**: 읽기 실패·추출 실패·스킵은 전부 목록에 기록.
+- **재현성**: 동일 입력 + 동일 프로필 → 동일 결과 (결정적 정렬).
+- **자기 검증 가능**: 모든 출력에 도구 버전·입력 해시·프로필 해시 표기.
+
+자세한 스펙: `docs/raidwatch-spec.md`
+
+## 테스트
+
+```bash
+python -m unittest discover -s tests
+```
