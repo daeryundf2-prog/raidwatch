@@ -47,7 +47,7 @@ jobs:
           # Locked files (live hives, .evtx in use) may be skipped — the
           # point is the pipeline runs end-to-end and reports honestly.
           mkdir -p st-out
-          ./dist/raidwatch.exe artifacts --root 'C:/Windows' --out st-out/artifacts --max-file-mb 20
+          ./dist/raidwatch.exe artifacts 'C:/Windows' --out st-out/artifacts --max-file-mb 20
           python -c "
           import json
           r = json.load(open('st-out/artifacts/artifacts.json', encoding='utf-8'))
