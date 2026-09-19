@@ -116,20 +116,49 @@ def build_inventory(
     hash_files: bool = True,
     max_hash_bytes: int | None = None,
     follow_symlinks: bool = False,
+    incremental: bool = False,
     progress: ProgressFn | None = None,
 ) -> dict:
-    """Enumerate root into the inventory DB. Returns summary counts."""
+    """Enumerate root into the inventory DB. Returns summary counts.
+
+    incremental=True reuses the stored sha256 for files whose size and
+    mtime are unchanged since the last run — the difference between
+    minutes and hours on multi-terabyte drives. atime is still refreshed
+    from the live stat so later accessed-diffs keep working; deleted
+    paths still disappear because unseen rows are never re-written.
+    """
     root = root.resolve()
+    prev = (
+        {rec.path: rec for rec in inv.iter_records()} if incremental else {}
+    )
     inv.clear_files()  # reused db must not keep stale paths
     counts = {"file": 0, "dir": 0, "symlink": 0, "other": 0, "error": 0}
     status_counts: dict[str, int] = {}
     mode_counts: dict[str, int] = {}
-    seen = 0
+    seen = reused = 0
     for rel, abs_path, st, kind in iter_fs(root, follow_symlinks=follow_symlinks):
-        rec, atime_mode = record_for(
-            rel, abs_path, st, kind,
-            hash_files=hash_files, max_hash_bytes=max_hash_bytes,
-        )
+        p = prev.get(rel)
+        if (
+            p is not None
+            and st is not None
+            and kind == "file"
+            and p.kind == "file"
+            and p.status in ("ok", "hash_skipped_oversize")
+            and p.size == st.st_size
+            and p.mtime_ns == st.st_mtime_ns
+        ):
+            # unchanged content: keep the hash, refresh timestamps
+            rec = FileRecord(
+                rel, st.st_size, st.st_mtime_ns, st.st_ctime_ns,
+                st.st_atime_ns, p.sha256, kind, p.status,
+            )
+            atime_mode = None
+            reused += 1
+        else:
+            rec, atime_mode = record_for(
+                rel, abs_path, st, kind,
+                hash_files=hash_files, max_hash_bytes=max_hash_bytes,
+            )
         if atime_mode is not None:
             mode_counts[atime_mode] = mode_counts.get(atime_mode, 0) + 1
         inv.upsert(rec)
@@ -156,6 +185,7 @@ def build_inventory(
     inv.set_meta("atime_preservation", atime_mode)
     inv.set_meta("counts", counts)
     inv.set_meta("status_counts", status_counts)
+    inv.set_meta("incremental_reused", reused)
     inv.commit()
     return {"entries": seen, "counts": counts, "status_counts": status_counts,
-            "atime_preservation": atime_mode}
+            "atime_preservation": atime_mode, "reused": reused}

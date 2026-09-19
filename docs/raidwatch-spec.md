@@ -208,24 +208,32 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
   포크레인, KAPE, MD-LIVE, DumpIt, WinPmem 등)의 실행 흔적을 식별해
   `observed_investigator_tools`로 출력. "어떤 도구로 선별했는가"는
   재현성 질의의 첫 질문이다.
-- **Recent items / 점프리스트 .lnk**: 집행 중 수사관이 열어본 파일의
-  링크 타깃을 문자열 추출로 복원 — "봤지만 압수하지 않은" 파일 목록의
+- **Recent items / 점프리스트 .lnk**: `.lnk` 구조 파서로 링크 타깃의
+  정확한 경로(LinkInfo+접미사 유니코드 포함)·작업 디렉터리·인자·
+  생성/접근/수정 시각을 복원 — "봤지만 압수하지 않은" 파일 목록의
   단서 (참관 없이도 열람 행위 재구성).
-- **이벤트 로그 사본**: System/Security/PrintService/Kernel-PnP `.evtx`
-  수집 — 인쇄 이벤트(원본 목록의 스풀 회수와 연계), 로그 삭제(1102),
-  외장 장치 연결의 시간축 재구성 (파싱은 별도 도구).
-- **레지스트리 하이브 + setupapi.dev.log**: SYSTEM/SOFTWARE/NTUSER.DAT
-  사본 + 문자열 추출 — 수사관이 꽂은 수집용 USB 장치 시리얼 등.
+- **이벤트 로그 사본 + 레코드 타임라인**: System/Security/PrintService/
+  Kernel-PnP `.evtx` 수집 + deflate 청크 해제 + ELF 레코드 파싱으로
+  레코드ID·UTC 시각의 이벤트 타임라인 생성 — 인쇄·로그 삭제·장치 연결의
+  시간축. 이벤트ID/필드 수준 파싱은 chainsaw 등 별도 도구 영역.
+- **레지스트리 하이브 구조 파싱**: regf 셀 파서로 SYSTEM/SOFTWARE/
+  NTUSER.DAT/Amcache.hve에서 구조화 추출 — ShimCache(실행된 도구 경로,
+  Win10 `00ts` 레코드 + 스캔 폴백), USBSTOR(꽂힌 장치 시리얼·Friendly
+  Name), UserAssist(GUI 실행+횟수+최종 실행), AmCache(경로+SHA1),
+  Run 키, RecentDocs. 발견된 경로는 수사 도구 마커와 대조해
+  `observed_investigator_tools`에 피드. 주의: ShimCache 타임스탬프는
+  실행 시각이 아니라 파일 mtime임을 명시. setupapi.dev.log는 문자열 추출.
 - **VSS 스냅샷 감지**: 기준선을 미리 못 찍었어도 Windows 볼륨 섀도
   카피에 집행 이전 상태가 남아 있을 수 있다 — 존재하면 "공짜 기준선".
   감지만 수행하고 존재 여부를 리포트.
 - **Prefetch 정밀 파싱**: `.pf` 본체를 파싱해 실행 파일명·실행 횟수·
   마지막 실행 시각까지 복원 (v23/26/30; Win10+ MAM 압축은 Windows에서
   ntdll로 해제 시도, 실패 시 `compressed_unparsed`로 명시).
-- **EVTX 청크 해제**: `.evtx`의 deflate 압축 청크를 풀어 binxml 스트림을
-  복원 — 이벤트 데이터 문자열(경로·계정·인쇄 작업명)이 UTF-16LE로
-  보존되어 문자열 수율이 크게 오른다. 이벤트 ID 수준의 완전 파싱은
-  별도 도구(chainsaw 등) 영역임을 명시.
+- **EVTX 청크 해제 + 타임라인**: `.evtx`의 deflate 압축 청크를 풀어
+  binxml 스트림을 복원하고 ELF 레코드 헤더(시그니처·크기·레코드ID·
+  FILETIME)를 파싱해 실제 이벤트 타임라인을 만든다. 이벤트 데이터
+  문자열도 UTF-16LE로 추출. 이벤트 ID 수준의 완전 binxml 파싱은 별도
+  도구(chainsaw 등) 영역임을 명시.
 
 ### 4.3b 삭제 파일 카빙 + USN 저널 (`raidwatch carve`, `raidwatch journal`)
 
@@ -323,7 +331,7 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M3 | 사후 diff: 기준선 vs 재인벤토리 비교 + 변경점 분류 리포트 | ✅ `raidwatch diff` (열람 `accessed` 분류 + 백데이팅 식재 탐지) |
 | M4 | 수사기관 목록 파싱 + 해시 대조 + out_of_scope 추출 + 검증 리포트 | ✅ `raidwatch verify` (OCR 손상 경로 퍼지 매칭 포함) |
 | M4a | 원본 목록 회수: 스풀/Temp/휴지통 수집 + 문자열 추출 | ✅ `raidwatch sources` |
-| M4b | 수사관 행위 재구성: prefetch 정밀 파싱/evtx 청크 해제/hive 문자열/VSS 감지 | ✅ `raidwatch artifacts` |
+| M4b | 수사관 행위 재구성: prefetch 정밀 파싱/evtx 청크 해제+레코드 타임라인/regf 하이브 구조 파싱(ShimCache·USBSTOR·UserAssist·AmCache)/lnk 파서/VSS 감지 | ✅ `raidwatch artifacts` |
 | M4c | 삭제 파일 카빙: $MFT 덤프 파싱 + resident 데이터 복구 + $SI/$FN 타임스톰프 불일치 탐지 | ✅ `raidwatch carve` (비-resident/미할당 클러스터는 미구현) |
 | M4d | USN 저널 리플레이: 집행 중 파일 생성·삭제·이름변경 이력 | ✅ `raidwatch journal` (fsutil 또는 CSV export 입력) |
 | M5 | 내용 검색(텍스트 추출/키워드)으로 선별 조건 재현 강화 | ✅ `scan`에 `in: content` — txt/Office/PDF/HWP·HWPX/zip 재귀 (best-effort 추출, `extract_failed` 명시) |

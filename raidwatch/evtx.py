@@ -57,6 +57,58 @@ def decompress_chunks(data: bytes) -> bytes:
     return bytes(out)
 
 
+def iter_records(blob: bytes):
+    """Yield (record_id, timestamp_ns, payload) for each ELF record in a
+    decompressed binxml stream. Record header: u32 sig 0x00002a2a,
+    u32 size, u64 record_id, u64 FILETIME — enough for a real event
+    timeline without parsing the binary XML body."""
+    pos = 0
+    sig = b"**\x00\x00"
+    while True:
+        i = blob.find(sig, pos)
+        if i < 0 or i + 24 > len(blob):
+            return
+        size = int.from_bytes(blob[i + 4: i + 8], "little")
+        if size < 24 or i + size > len(blob):
+            pos = i + 4
+            continue
+        # tail signature must repeat the size for a valid record
+        if blob[i + size - 4: i + size] != blob[i + 4: i + 8]:
+            pos = i + 4
+            continue
+        rec_id = int.from_bytes(blob[i + 8: i + 16], "little")
+        ft = int.from_bytes(blob[i + 16: i + 24], "little")
+        ts_ns = (ft - 116444736000000000) * 100 if ft else None
+        yield rec_id, ts_ns, blob[i + 24: i + size - 4]
+        pos = i + size
+
+
+def event_timeline(path: Path, *, per_record_strings: int = 6) -> dict:
+    """Parse an .evtx into a real event timeline: record id + UTC time
+    per event, plus a few UTF-16 strings per record for context."""
+    from .common import ns_to_iso
+    from .sources import extract_strings_bytes
+
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return {"status": "read_error", "events": []}
+    blob = decompress_chunks(data) or data
+    events = []
+    for rec_id, ts_ns, payload in iter_records(blob):
+        ev = {"record_id": rec_id, "timestamp_utc": ns_to_iso(ts_ns) if ts_ns else None}
+        if per_record_strings:
+            ev["strings"] = extract_strings_bytes(payload, limit=per_record_strings)
+        events.append(ev)
+    return {
+        "status": "ok" if events else "no_records",
+        "event_count": len(events),
+        "first_event_utc": events[0]["timestamp_utc"] if events else None,
+        "last_event_utc": events[-1]["timestamp_utc"] if events else None,
+        "events": events,
+    }
+
+
 def evtx_strings(path: Path, limit: int = 4000) -> list[str]:
     """Decompress an .evtx file and pull ASCII + UTF-16LE strings."""
     from .sources import extract_strings_bytes

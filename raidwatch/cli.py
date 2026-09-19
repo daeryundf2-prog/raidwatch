@@ -48,6 +48,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
         hash_files=not args.no_hash,
         max_hash_bytes=args.max_hash_mb * 1024 * 1024 if args.max_hash_mb else None,
         follow_symlinks=args.follow_symlinks,
+        incremental=args.incremental,
         progress=lambda n, p: print(f"  {n} entries... {p}", file=sys.stderr)
         if args.verbose
         else None,
@@ -275,6 +276,11 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--no-hash", action="store_true", help="skip content hashing")
         p.add_argument("--max-hash-mb", type=int, default=None)
         p.add_argument("--follow-symlinks", action="store_true")
+        p.add_argument(
+            "--incremental",
+            action="store_true",
+            help="reuse hashes for files whose size+mtime are unchanged",
+        )
 
     p = sub.add_parser("baseline", help="build a baseline inventory DB")
     p.add_argument("root")

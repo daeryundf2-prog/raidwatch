@@ -18,8 +18,10 @@ import subprocess
 from pathlib import Path
 
 from .common import ns_to_iso, sha256_file, utc_now_iso, write_json, write_manifest
-from .evtx import decompress_evtx_file, evtx_strings
+from .evtx import decompress_evtx_file, event_timeline, evtx_strings
+from .hiveart import extract_hive_artifacts
 from .inventory import iter_fs
+from .lnk import parse_lnk_file
 from .pfparse import parse_prefetch
 from .sources import extract_strings
 
@@ -65,7 +67,10 @@ ARTIFACT_DIRS = {
 }
 RECENT_PATH = "microsoft/windows/recent"
 JUMPLIST_HINT = ("automaticdestinations", "customdestinations")
-HIVE_NAMES = {"system", "software", "sam", "security", "ntuser.dat", "usrclass.dat"}
+HIVE_NAMES = {
+    "system", "software", "sam", "security", "ntuser.dat", "usrclass.dat",
+    "amcache.hve",
+}
 DEVICE_LOG = "setupapi.dev.log"
 EVT_LOG_HINTS = (
     "system.evtx",
@@ -222,6 +227,17 @@ def collect_artifacts(
                 abs_path, binxml_dir / (rel.replace("/", "__") + ".binxml")
             )
             entry["binxml"] = dec
+            timeline = event_timeline(abs_path)
+            entry["event_timeline"] = {
+                k: v for k, v in timeline.items() if k != "events"
+            }
+            if timeline["events"]:
+                dest = out_dir / "timelines" / (
+                    rel.replace("/", "__") + ".timeline.json"
+                )
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                write_json(dest, timeline)
+                entry["timeline_to"] = str(dest)
             strings = evtx_strings(abs_path)
             if strings:
                 dest = strings_dir / (rel.replace("/", "__") + ".strings.txt")
@@ -229,6 +245,19 @@ def collect_artifacts(
                 dest.write_text("\n".join(strings) + "\n", encoding="utf-8")
                 entry["strings_to"] = str(dest)
         elif category == "recent_items" and abs_path.suffix.lower() == ".lnk":
+            lnk = parse_lnk_file(abs_path)
+            entry["lnk"] = lnk
+            if lnk.get("target_path"):
+                label = _tool_label(Path(lnk["target_path"]).name)
+                if label:
+                    observed.setdefault(label, []).append(
+                        {
+                            "evidence": "recent_link",
+                            "path": rel,
+                            "target": lnk["target_path"],
+                            "accessed_utc": lnk.get("accessed_utc"),
+                        }
+                    )
             strings = extract_strings(abs_path)
             targets = [s for s in strings if re.search(r"[A-Za-z]:[\\/]|^/|\.(lnk|exe|txt|pdf|docx?|hwp)\b", s, re.IGNORECASE)]
             entry["link_targets_guess"] = targets[:20]
@@ -243,6 +272,32 @@ def collect_artifacts(
                     {"evidence": category, "path": rel, "mtime_utc": entry["mtime_utc"]}
                 )
             if category == "registry_or_device_log" and entry["copied_to"]:
+                # Structured hive parse first — ShimCache executions,
+                # USBSTOR devices, UserAssist launches, Run keys.
+                if abs_path.name.lower() in HIVE_NAMES:
+                    hive_art = extract_hive_artifacts(abs_path)
+                    entry["hive_artifacts"] = hive_art
+                    if hive_art.get("parsed"):
+                        for section in ("shimcache", "userassist", "amcache"):
+                            for item in hive_art.get(section, []):
+                                p = item.get("path") or item.get("name_rot13_decoded") or ""
+                                label = _tool_label(Path(p).name)
+                                if label:
+                                    observed.setdefault(label, []).append(
+                                        {
+                                            "evidence": f"hive_{section}",
+                                            "path": rel,
+                                            "observed": p,
+                                            "detail": {
+                                                k: v for k, v in item.items()
+                                                if k not in ("path", "name_rot13_decoded")
+                                            },
+                                        }
+                                    )
+                        for dev in hive_art.get("usbstor", []):
+                            observed.setdefault("USB device (collection media?)", []).append(
+                                {"evidence": "usbstor", "path": rel, "detail": dev}
+                            )
                 strings = extract_strings(abs_path)
                 # USB device serials and service names left by collection media
                 hits = [

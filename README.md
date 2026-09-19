@@ -19,6 +19,7 @@
 ```bash
 # 1. 사전: 기준선 생성 (평시에 실행)
 python -m raidwatch baseline /path/to/pc --out case/<case_id>/baseline
+#    대용량 디스크는 --incremental로 재스캔 가속 (size+mtime 불변 시 해시 재사용)
 
 # 2. 사후: 돌려받은 PC와 기준선 비교
 python -m raidwatch diff \

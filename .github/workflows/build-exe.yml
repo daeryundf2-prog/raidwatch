@@ -38,6 +38,25 @@ jobs:
             ./dist/raidwatch --help > /dev/null && echo "exe OK"
           fi
         shell: bash
+      - name: Real-system self test (Windows only)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: |
+          # Run the built exe against the runner's own C:\Windows — real
+          # prefetch/EVTX/hives exercise the forensic parsers for real.
+          # Locked files (live hives, .evtx in use) may be skipped — the
+          # point is the pipeline runs end-to-end and reports honestly.
+          mkdir -p st-out
+          ./dist/raidwatch.exe artifacts --root 'C:/Windows' --out st-out/artifacts --max-file-mb 20
+          python -c "
+          import json
+          r = json.load(open('st-out/artifacts/artifacts.json', encoding='utf-8'))
+          s = r['summary']
+          print('matched:', s['matched'], 'copied:', s['copied'], 'tools:', s['tools_found'])
+          hives = [e for e in r['artifacts'].get('registry_or_device_log', []) if e.get('hive_artifacts', {}).get('parsed')]
+          print('hives parsed:', len(hives))
+          assert 'artifacts' in r and 'summary' in r
+          "
       - name: Rename artifact
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then

@@ -1023,5 +1023,228 @@ class BundleFieldTests(unittest.TestCase):
             self.assertEqual(info["notes"], "n")
 
 
+def _cell(payload: bytes) -> bytes:
+    size = 4 + len(payload)
+    pad = (-size) % 8
+    return struct.pack("<i", -(size + pad)) + payload + b"\x00" * pad
+
+
+def _nk(name: str, sub_list: int | None, sub_count: int,
+        val_list: int | None, val_count: int) -> bytes:
+    body = b"nk" + struct.pack("<H", 0x0020)
+    body += struct.pack("<Q", 0)
+    body += b"\x00" * 4
+    body += struct.pack("<i", -1)
+    body += struct.pack("<I", sub_count) + struct.pack("<I", 0)
+    body += struct.pack("<I", sub_list if sub_list is not None else 0xFFFFFFFF)
+    body += struct.pack("<I", 0xFFFFFFFF)
+    body += struct.pack("<I", val_count)
+    body += struct.pack("<I", val_list if val_list is not None else 0xFFFFFFFF)
+    body += struct.pack("<I", 0xFFFFFFFF)
+    body += struct.pack("<I", 0xFFFFFFFF)
+    body += b"\x00" * 20
+    nb = name.encode("latin-1")
+    body += struct.pack("<H", len(nb)) + struct.pack("<H", 0) + nb
+    return body
+
+
+def _vk(name: str, type_id: int, data_idx: int, data_size: int) -> bytes:
+    nb = name.encode("latin-1")
+    body = b"vk" + struct.pack("<H", len(nb))
+    body += struct.pack("<I", data_size)
+    body += struct.pack("<I", data_idx)
+    body += struct.pack("<I", type_id)
+    body += struct.pack("<H", 0x0001) + b"\x00" * 2 + nb
+    return body
+
+
+def _lf(children: list[int]) -> bytes:
+    body = b"lf" + struct.pack("<H", len(children))
+    for c in children:
+        body += struct.pack("<I", c) + b"\x00" * 4
+    return body
+
+
+def _vlist(vks: list[int]) -> bytes:
+    return b"".join(struct.pack("<I", v) for v in vks)
+
+
+def make_test_hive() -> bytes:
+    """Minimal regf hive: SYSTEM\\ControlSet001 with USBSTOR + ShimCache."""
+    cells: list[bytes] = []
+    off = [0x20]
+
+    def add(payload: bytes) -> int:
+        idx = off[0]
+        c = _cell(payload)
+        cells.append((idx, c))
+        off[0] += len(c)
+        return idx
+
+    shim_path = "C:\\Tools\\FTKIMAGER.EXE".encode("utf-16-le")
+    ft = 133900000000000000
+    entry = (
+        b"00ts" + struct.pack("<I", 0)
+        + struct.pack("<I", 32 + len(shim_path))
+        + struct.pack("<I", len(shim_path))
+        + struct.pack("<Q", ft) + b"\x00" * 8 + shim_path
+    )
+    shim_blob = struct.pack("<I", 0x34) + entry
+
+    fn_data = add("USB DISK\x00".encode("utf-16-le"))
+    fn_vk = add(_vk("FriendlyName", 1, fn_data, len("USB DISK\x00") * 2))
+    serial_vl = add(_vlist([fn_vk]))
+    serial_nk = add(_nk("SER123", None, 0, serial_vl, 1))
+    dev_lf = add(_lf([serial_nk]))
+    dev_nk = add(_nk("Disk&Ven_X&Prod_Y", dev_lf, 1, None, 0))
+    usb_lf = add(_lf([dev_nk]))
+    usb_nk = add(_nk("USBSTOR", usb_lf, 1, None, 0))
+    enum_lf = add(_lf([usb_nk]))
+    enum_nk = add(_nk("Enum", enum_lf, 1, None, 0))
+
+    shim_data = add(shim_blob)
+    shim_vk = add(_vk("AppCompatCache", 3, shim_data, len(shim_blob)))
+    shim_vl = add(_vlist([shim_vk]))
+    acc_nk = add(_nk("AppCompatCache", None, 0, shim_vl, 1))
+    sm_lf = add(_lf([acc_nk]))
+    sm_nk = add(_nk("Session Manager", sm_lf, 1, None, 0))
+    ctl_lf = add(_lf([sm_nk]))
+    ctl_nk = add(_nk("Control", ctl_lf, 1, None, 0))
+    cs_lf = add(_lf([enum_nk, ctl_nk]))
+    cs_nk = add(_nk("ControlSet001", cs_lf, 2, None, 0))
+    root_lf = add(_lf([cs_nk]))
+    root_nk = add(_nk("SYSTEM", root_lf, 1, None, 0))
+
+    header = bytearray(0x1000)
+    header[:4] = b"regf"
+    struct.pack_into("<I", header, 0x24, root_nk)
+    body = b"".join(c for _, c in cells)
+    hbin_size = 0x20 + len(body)
+    hbin_size += (-hbin_size) % 0x1000
+    hbin = b"hbin" + struct.pack("<I", 0) + struct.pack("<I", hbin_size)
+    hbin += b"\x00" * 0x14 + body
+    hbin += b"\x00" * (hbin_size - len(hbin))
+    return bytes(header) + hbin
+
+
+class HiveParserTests(unittest.TestCase):
+    def test_hive_usbstor_and_shimcache(self) -> None:
+        from raidwatch.hive import Hive
+        from raidwatch.hiveart import shimcache, usbstor
+
+        hive = Hive(make_test_hive())
+        devs = usbstor(hive)
+        self.assertEqual(len(devs), 1)
+        self.assertEqual(devs[0]["serial"], "SER123")
+        self.assertEqual(devs[0]["friendly_name"], "USB DISK")
+
+        shim = shimcache(hive)
+        self.assertEqual(len(shim), 1)
+        self.assertIn("FTKIMAGER", shim[0]["path"])
+        self.assertEqual(shim[0]["parse"], "win10_00ts")
+        self.assertIsNotNone(shim[0]["entry_file_mtime_utc"])
+
+    def test_hive_rejects_non_regf(self) -> None:
+        from raidwatch.hive import Hive, HiveError
+
+        with self.assertRaises(HiveError):
+            Hive(b"not a hive" + b"\x00" * 5000)
+
+
+class LnkParserTests(unittest.TestCase):
+    def test_parse_lnk_target_and_times(self) -> None:
+        from raidwatch.lnk import parse_lnk
+
+        base = b"C:\\Docs\x00"
+        suffix = "report.pdf".encode("utf-16-le") + b"\x00\x00"
+        hdr_size = 0x24
+        li = struct.pack("<I", 0)  # placeholder size
+        li_hdr_len = hdr_size + len(base) + len(suffix)
+        base_off = hdr_size
+        suffix_off = base_off + len(base)
+        ubase_off = 0
+        usuffix_off = suffix_off
+        li_body = (
+            struct.pack("<I", hdr_size) + struct.pack("<I", 1)
+            + struct.pack("<I", 0) + struct.pack("<I", base_off)
+            + struct.pack("<I", 0) + struct.pack("<I", suffix_off)
+            + struct.pack("<I", ubase_off) + struct.pack("<I", usuffix_off)
+            + base + suffix
+        )
+        li = struct.pack("<I", len(li_body) + 4) + li_body
+
+        flags = 0x02 | 0x80  # HasLinkInfo + IsUnicode
+        hdr = b"L\x00\x00\x00"
+        hdr += b"\x01\x14\x02\x00\x00\x00\x00\x00\xc0\x00\x00\x00\x00\x00\x00\x46"
+        hdr += struct.pack("<I", flags) + b"\x00" * 4
+        hdr += struct.pack("<Q", 133900000000000000) * 3
+        hdr += b"\x00" * (0x4C - len(hdr))
+        out = parse_lnk(hdr + li)
+        self.assertEqual(out["target_path"], "C:\\Docs\\report.pdf")
+        self.assertIsNotNone(out["accessed_utc"])
+
+    def test_lnk_rejects_garbage(self) -> None:
+        from raidwatch.lnk import parse_lnk_file
+
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "x.lnk"
+            p.write_bytes(b"junk" * 40)
+            self.assertIsNone(parse_lnk_file(p)["target_path"])
+
+
+class EvtxRecordTests(unittest.TestCase):
+    def test_iter_records_timeline(self) -> None:
+        from raidwatch.evtx import iter_records
+
+        def rec(rid: int, ft: int, payload: bytes) -> bytes:
+            size = 24 + len(payload) + 4
+            return (
+                b"**\x00\x00" + struct.pack("<I", size)
+                + struct.pack("<Q", rid) + struct.pack("<Q", ft)
+                + payload + struct.pack("<I", size)
+            )
+
+        ft = 133900000000000000
+        blob = rec(1, ft, b"alpha") + rec(2, ft + 100, b"beta")
+        records = list(iter_records(blob))
+        self.assertEqual([r[0] for r in records], [1, 2])
+        self.assertEqual(records[0][2], b"alpha")
+        # corrupt tail size must be rejected
+        bad = rec(3, ft, b"gamma")[:-4] + b"XXXX"
+        self.assertEqual(list(iter_records(bad)), [])
+
+
+class IncrementalInventoryTests(unittest.TestCase):
+    def test_incremental_reuses_unchanged_hashes(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            _write(root / "a.txt", b"aaa")
+            _write(root / "b.txt", b"bbb")
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv)
+            a_hash = inv.get("a.txt").sha256
+
+            _write(root / "b.txt", b"CHANGED")
+            _write(root / "c.txt", b"ccc")
+            summary = build_inventory(root, inv, incremental=True)
+            self.assertEqual(summary["reused"], 1)
+            self.assertEqual(inv.get("a.txt").sha256, a_hash)
+            self.assertNotEqual(inv.get("b.txt").sha256, a_hash)
+            inv.close()
+
+    def test_incremental_drops_deleted_files(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            _write(root / "gone.txt", b"x")
+            _write(root / "stay.txt", b"y")
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv)
+            (root / "gone.txt").unlink()
+            build_inventory(root, inv, incremental=True)
+            self.assertIsNone(inv.get("gone.txt"))
+            self.assertIsNotNone(inv.get("stay.txt"))
+            inv.close()
+
+
 if __name__ == "__main__":
     unittest.main()
