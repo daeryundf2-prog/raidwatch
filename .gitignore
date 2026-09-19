@@ -10,3 +10,4 @@ case/
 watch-state.json
 events.jsonl
 .DS_Store
+dist-ci/
