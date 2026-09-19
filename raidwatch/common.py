@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TOOL_NAME = "raidwatch"
-TOOL_VERSION = "0.1.0"
+TOOL_VERSION = "0.2.0"
 _CHUNK = 1024 * 1024
 
 

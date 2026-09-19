@@ -37,9 +37,25 @@ python -m raidwatch verify \
   --current-root /path/to/returned-pc \
   --out case/<case_id>/verify
 
+# 4a. 종이 목록의 디지털 원본 회수 — 스풀/Temp/휴지통
+#     인쇄물을 OCR하기 전에 원본 파일을 먼저 찾는다
+python -m raidwatch sources /path/to/seized-pc \
+  --out case/<case_id>/sources --since 2026-09-19
+
 # 감시 모드 (폴링 스냅샷, Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 ```
+
+## 검증 시 두 가지 역발상
+
+1. **종이를 읽지 말고 원본 파일을 턴다** (`sources`): 수사관이 준
+   인쇄물은 도구의 출력물이고, 스풀 파일·Temp 임시 산출물·휴지통에
+   원본이 남는 경우가 많다. 먼저 회수해서 문자열 추출로 복원한다.
+   (미할당 영역 카빙은 별도 과제)
+2. **해시를 읽지 말고 경로만 매핑한다** (`verify` 퍼지 매칭): 도장에
+   가린 해시는 OCR이 불가능하지만, 경로는 깨져도(`U5ers`→`Users`)
+   혼동문자 정규화+유사도 매칭으로 인벤토리의 진짜 경로를 찾는다.
+   해시는 찾은 파일에서 직접 계산하면 된다.
 
 ## 영장 프로필 (warrant-profile.json)
 

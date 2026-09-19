@@ -14,6 +14,7 @@ from .diff import run_diff
 from .inventory import build_inventory
 from .profile import ProfileError, load_profile
 from .scan import run_scan
+from .sources import collect_sources
 from .verify import run_verify
 from .watcher import run_watch
 
@@ -125,6 +126,20 @@ def cmd_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sources(args: argparse.Namespace) -> int:
+    from .common import iso_to_ns
+
+    since_ns = iso_to_ns(args.since) if args.since else None
+    report = collect_sources(
+        Path(args.root).expanduser(),
+        Path(args.out).expanduser(),
+        since_ns=since_ns,
+        max_file_bytes=args.max_file_mb * 1024 * 1024,
+    )
+    _print(report["summary"])
+    return 0
+
+
 def cmd_watch(args: argparse.Namespace) -> int:
     result = run_watch(
         Path(args.root).expanduser(),
@@ -184,6 +199,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--current-root", help="re-hash files on current disk")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_verify)
+
+    p = sub.add_parser(
+        "sources",
+        help="recover original seized-list sources (printer spool/temp/recycle bin)",
+    )
+    p.add_argument("root")
+    p.add_argument("--out", required=True)
+    p.add_argument("--since", help="only collect files modified after this ISO date/time")
+    p.add_argument("--max-file-mb", type=int, default=50)
+    p.set_defaults(func=cmd_sources)
 
     p = sub.add_parser("watch", help="snapshot-polling change monitor")
     p.add_argument("root")

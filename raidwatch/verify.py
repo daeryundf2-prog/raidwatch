@@ -8,6 +8,7 @@ claimed hashes, and classifies warrant scope under narrow/broad readings.
 from __future__ import annotations
 
 import csv
+import difflib
 import json
 import re
 from pathlib import Path
@@ -81,6 +82,51 @@ def _match_path(rel: str, known: set[str]) -> str | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
+# Visually confusable characters collapsed for OCR-noise-tolerant matching:
+# a seized list read by OCR may contain "U5ers", "0" for "O", "1" for "l", etc.
+_CONFUSABLES = str.maketrans(
+    {
+        "O": "0", "o": "0", "Q": "0",
+        "I": "1", "l": "1", "i": "1", "|": "1",
+        "S": "5", "s": "5",
+        "B": "8",
+        "Z": "2", "z": "2",
+        "G": "6",
+        "g": "9", "q": "9",
+    }
+)
+
+
+def _fuzzy_key(text: str) -> str:
+    return text.lower().replace("\\", "/").translate(_CONFUSABLES)
+
+
+def _fuzzy_match(
+    rel: str, known: set[str], threshold: float = 0.82, margin: float = 0.05
+) -> tuple[str | None, float, bool]:
+    """Best fuzzy path match for an OCR-damaged claimed path.
+
+    Returns (path|None, best_score, ambiguous). A match requires the best
+    candidate to beat the second best by `margin` so near-ties are not
+    silently resolved.
+    """
+    target = _fuzzy_key(rel)
+    best = None
+    best_score = 0.0
+    second_score = 0.0
+    for p in known:
+        score = difflib.SequenceMatcher(None, target, _fuzzy_key(p)).ratio()
+        if score > best_score:
+            second_score, best_score, best = best_score, score, p
+        elif score > second_score:
+            second_score = score
+    if best is None or best_score < threshold:
+        return None, best_score, False
+    if best_score - second_score < margin:
+        return None, best_score, True
+    return best, best_score, False
+
+
 def verify_items(
     seized: list[dict],
     inv: Inventory,
@@ -102,11 +148,13 @@ def verify_items(
         "borderline": 0,
         "out_of_scope": 0,
         "scope_unknown": 0,
+        "fuzzy_matched": 0,
     }
     for item in seized:
         summary["total"] += 1
         rel = item["rel"]
         match = _match_path(rel, known)
+        match_method = "exact" if match else None
         entry = {
             "claimed_path": item["claimed_path"],
             "claimed_sha256": item["sha256"],
@@ -116,11 +164,32 @@ def verify_items(
             "notes": [],
         }
         if match is None:
-            suffix_hits = [p for p in known if p.endswith("/" + rel)]
-            entry["status"] = "ambiguous_path" if len(suffix_hits) > 1 else "not_in_inventory"
-            summary[entry["status"]] += 1
-            results.append(entry)
-            continue
+            fuzzy_path, score, ambiguous = _fuzzy_match(rel, known)
+            if fuzzy_path is not None:
+                match = fuzzy_path
+                match_method = "fuzzy"
+                entry["matched_path"] = match
+                summary["fuzzy_matched"] += 1
+                entry["notes"].append(
+                    f"fuzzy path match score={score:.3f}; "
+                    "hash verified from inventory, not from the printed list"
+                )
+            else:
+                suffix_hits = [p for p in known if p.endswith("/" + rel)]
+                entry["status"] = (
+                    "ambiguous_path"
+                    if (ambiguous or len(suffix_hits) > 1)
+                    else "not_in_inventory"
+                )
+                if ambiguous:
+                    entry["notes"].append(
+                        f"fuzzy candidates too close (score={score:.3f})"
+                    )
+                summary[entry["status"]] += 1
+                results.append(entry)
+                continue
+        if match_method:
+            entry["notes"].append(f"matched via {match_method}")
 
         rec = inv.get(match)
         if profile is not None:
@@ -176,6 +245,7 @@ def render_verify_markdown(report: dict, seized_source: str) -> str:
         f"| 해시 불일치 | {s['hash_mismatch']} |",
         f"| 해시 미기재(경로만 일치) | {s['no_claimed_hash']} |",
         f"| 인벤토리에 없음 | {s['not_in_inventory']} |",
+        f"| 퍼지 매칭(OCR 손상 경로 복원) | {s['fuzzy_matched']} |",
         f"| 경로 모호 | {s['ambiguous_path']} |",
         f"| 현재 디스크에 없음 | {s['missing_now']} |",
         "",

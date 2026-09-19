@@ -12,6 +12,7 @@ from raidwatch.diff import diff_inventories
 from raidwatch.inventory import build_inventory
 from raidwatch.profile import evaluate, load_profile
 from raidwatch.scan import scan_target
+from raidwatch.sources import collect_sources, extract_strings
 from raidwatch.verify import parse_seized_list, verify_items
 from raidwatch.watcher import run_watch
 
@@ -164,6 +165,29 @@ class VerifyTests(unittest.TestCase):
             self.assertEqual(scope["photos/img001.jpg"], "out_of_scope")
             inv.close()
 
+    def test_fuzzy_match_recovers_ocr_damaged_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "target"
+            RaidwatchFixture(root)
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv)
+
+            # OCR-damaged claimed path: U5ers-style corruption of the real path
+            seized = [
+                {"claimed_path": "d0cs/계약서_초압.txt",
+                 "rel": "d0cs/계약서_초압.txt", "sha256": None},
+                {"claimed_path": "t0tally/missing.bin",
+                 "rel": "t0tally/missing.bin", "sha256": None},
+            ]
+            report = verify_items(seized, inv)
+            s = report["summary"]
+            self.assertEqual(s["fuzzy_matched"], 1)
+            self.assertEqual(s["not_in_inventory"], 1)
+            first = report["items"][0]
+            self.assertEqual(first["matched_path"], "docs/계약서_초안.txt")
+            self.assertTrue(any("fuzzy" in n for n in first["notes"]))
+            inv.close()
+
     def test_parse_seized_list_txt_and_csv(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             txt = Path(td) / "list.txt"
@@ -183,6 +207,52 @@ class VerifyTests(unittest.TestCase):
             items = parse_seized_list(csv_path)
             self.assertEqual(items[0]["rel"], "docs/a.hwp")
             self.assertEqual(items[0]["sha256"], "a" * 64)
+
+
+class SourcesTests(unittest.TestCase):
+    def test_collects_spool_temp_and_recycle_sources(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "seized-pc"
+            _write(
+                root / "Windows" / "System32" / "spool" / "PRINTERS" / "00042.SPL",
+                b"\x00\x01Seized Evidence List docs/contract.hwp sha256=abc\x00",
+            )
+            _write(
+                root / "Users" / "admin" / "AppData" / "Local" / "Temp"
+                / "evidence_list.csv",
+                b"path,sha256\ndocs/a.hwp,deadbeef\n",
+            )
+            _write(
+                root / "Users" / "admin" / "AppData" / "Local" / "Temp"
+                / "random_cache.bin",
+                b"\x00\x01\x02\x03",
+            )
+            _write(root / "$Recycle.Bin" / "S-1-5-21" / "$RXYZ.csv", b"old,list\n")
+            _write(root / "docs" / "normal.txt", b"ordinary file")
+
+            out = Path(td) / "sources-out"
+            report = collect_sources(root, out)
+            s = report["summary"]
+
+            self.assertEqual(s["by_reason"]["spool"], 1)
+            self.assertEqual(s["by_reason"]["temp"], 1)  # csv only, not .bin
+            self.assertEqual(s["by_reason"]["recycle_bin"], 1)
+            paths = {i["path"] for i in report["items"]}
+            self.assertNotIn("docs/normal.txt", paths)
+
+            # SPL strings extraction recovered embedded text
+            spl_item = next(
+                i for i in report["items"] if i["path"].endswith("00042.SPL")
+            )
+            self.assertIsNotNone(spl_item["extracted_to"])
+            extracted = Path(spl_item["extracted_to"]).read_text(encoding="utf-8")
+            self.assertIn("Seized Evidence List", extracted)
+
+    def test_extract_strings_finds_ascii_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            blob = Path(td) / "blob.bin"
+            blob.write_bytes(b"\x01\x02evidence-item-list\x00\xff")
+            self.assertIn("evidence-item-list", extract_strings(blob))
 
 
 class WatchTests(unittest.TestCase):
