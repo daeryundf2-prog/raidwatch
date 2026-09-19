@@ -38,7 +38,16 @@ if "%ROOT%"=="" set ROOT=C:\
 rem Optional return path: RUN.bat D:\ \\server\share — or set RW_DEST.
 set "DEST=%~2"
 if "%DEST%"=="" set "DEST=%RW_DEST%"
-rem Administrator → allow a VSS snapshot so locked hives/EVTX are read.
+
+rem Auto-elevate via UAC: BitLocker keys, USN journal and VSS snapshots
+rem need Administrator. If the prompt is declined we continue with
+rem reduced coverage rather than dying.
+net session >nul 2>&1
+if %errorlevel% neq 0 (
+    echo Requesting Administrator rights - click Yes on the UAC prompt.
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -ArgumentList '%~1','%~2' -Verb RunAs" >nul 2>&1 && exit /b
+    echo UAC declined/unavailable - continuing WITHOUT admin coverage.
+)
 set "VSSFLAG="
 net session >nul 2>&1
 if not errorlevel 1 (

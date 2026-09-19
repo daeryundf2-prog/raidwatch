@@ -349,6 +349,12 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M17 | 법원 제출 서면: 인쇄 최적화 환부·폐기 청구서 | ✅ `raidwatch petition` → `청구서.html` (A4, 당사자/서명란, 별지 목록 자동 삽입) |
 | M18 | BitLocker 긴급 보존 | ✅ `raidwatch lockbox` — 복구키·프로텍터·볼륨맵 (Windows, 관리자 권한 필요 부분은 항목별 기록) |
 | M19 | PC 잔존 모바일 데이터 보존 | ✅ `raidwatch mobile`/`pc-mobile` — 카톡 PC·iTunes·SmartSwitch·WhatsApp/Telegram Desktop |
+| M20 | mirror 속도: Direct Probe — 목록 경로를 `is_file`로 직접 확인, 깨진 경로만 부모 서브트리로 좁혀 퍼지매칭 | ✅ `mirror --seized` — 전체 디스크 인벤토리 제거, 2TB도 즉시 복사 시작 |
+| M21 | RUN.bat UAC 자동 승격 | ✅ `net session` 체크 → 미승격 시 `Start-Process -Verb RunAs` 재기동, 거절 시 제한 커버리지로 계속, 승격 성공 시 `--vss` 자동 |
+| M22 | 관할 경계 적발: UNC·매핑 네트워크 드라이브·리무버블·클라우드 동기화 경로 플래그 | ✅ `raidwatch boundary` — `warrant_territory_violation` 플래그, GetDriveTypeW 기반(비Windows/오프라인은 `local_unverified`로 과장 금지), petition 자동 반영 |
+| M23 | 수사관 증거 컨테이너 해시 | ✅ `raidwatch containers` — 부착 외장매체의 .ad1/.e01/.ex01/.l01/.aff/.zip 등 탐지·해시 기록(부트 볼륨 제외, 깊이·엔트리 상한, `--max-hash-gb` 초과 시 이름/크기/mtime만 기록) — 이후 제시 해시와 다르면 증거 탄핵 |
+| M24 | 키워드 노이즈율 계측 | ✅ `raidwatch keyword-audit` — 키워드 귀속 항목 중 영장 자체 조건 불부합 비율(out_of_scope·excluded·borderline; unverifiable은 노이즈에서 제외), 무귀속 항목 별도 집계, petition 자동 반영 |
+| M25 | 조사실 1초 확인기 | ✅ `raidwatch inquiry` — case 디렉터리의 verify/diff 인덱스에서 파일명·경로 조각으로 즉시 판정 출력, 대화형 또는 `-q` 단발, `--out` 시 조회 로그 보존 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.

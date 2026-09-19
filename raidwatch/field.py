@@ -26,7 +26,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .artifacts import collect_artifacts
+from .audit import run_keyword_audit
+from .boundary import run_boundary
 from .common import sha256_file, utc_now_iso, write_json, write_manifest
+from .containers import sniff_containers
 from .db import Inventory
 from .diff import run_diff
 from .inventory import build_inventory
@@ -225,6 +228,15 @@ def run_field(
             lambda: run_lockbox(root, steps_dir / "lockbox"),
         )
 
+    # Investigators' evidence containers (.ad1/.e01/.zip…) on attached
+    # external media — hash them while their drive is still plugged in.
+    _run(
+        "containers",
+        lambda: sniff_containers(
+            steps_dir / "containers", since_ns=since_ns
+        ),
+    )
+
     profile = None
     if inputs["profile"]:
         try:
@@ -268,6 +280,24 @@ def run_field(
         )
     if inv is not None:
         inv.close()
+
+    # Territory check needs only the list; keyword audit needs list +
+    # profile. Both feed petition evidence automatically.
+    if inputs["seized"]:
+        _run(
+            "boundary",
+            lambda: run_boundary(
+                Path(inputs["seized"]), None, steps_dir / "boundary"
+            ),
+        )
+        if profile is not None:
+            _run(
+                "keyword-audit",
+                lambda: run_keyword_audit(
+                    Path(inputs["seized"]), profile, root,
+                    steps_dir / "keyword-audit",
+                ),
+            )
 
     # Write the run report inside steps/ so the archive itself carries
     # the seizure info and step outcomes (not just files beside it).

@@ -9,7 +9,10 @@ import tempfile
 from pathlib import Path
 
 from .artifacts import collect_artifacts
+from .audit import run_keyword_audit
+from .boundary import run_boundary
 from .bundle import build_bundle
+from .containers import sniff_containers
 from .common import write_json, write_manifest
 from .db import Inventory
 from .diff import run_diff
@@ -306,6 +309,60 @@ def cmd_mobile(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_boundary(args: argparse.Namespace) -> int:
+    try:
+        report = run_boundary(
+            Path(args.seized).expanduser() if args.seized else None,
+            Path(args.verify).expanduser() if args.verify else None,
+            Path(args.out).expanduser(),
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"boundary error: {exc}", file=sys.stderr)
+        return 2
+    _print(report["summary"])
+    return 0
+
+
+def cmd_containers(args: argparse.Namespace) -> int:
+    from .common import iso_to_ns
+
+    since_ns = iso_to_ns(args.since) if args.since else None
+    report = sniff_containers(
+        Path(args.out).expanduser(),
+        since_ns=since_ns,
+        extra_roots=[Path(r).expanduser() for r in args.scan],
+        max_hash_gb=args.max_hash_gb,
+    )
+    _print(report["summary"])
+    return 0
+
+
+def cmd_keyword_audit(args: argparse.Namespace) -> int:
+    try:
+        profile = load_profile(args.profile)
+    except ProfileError as exc:
+        print(f"profile error: {exc}", file=sys.stderr)
+        return 2
+    report = run_keyword_audit(
+        Path(args.seized).expanduser(),
+        profile,
+        Path(args.root).expanduser(),
+        Path(args.out).expanduser(),
+    )
+    _print(report["summary"])
+    return 0
+
+
+def cmd_inquiry(args: argparse.Namespace) -> int:
+    from .inquiry import run_inquiry
+
+    return run_inquiry(
+        Path(args.case).expanduser(),
+        Path(args.out).expanduser() if args.out else None,
+        query_text=args.query,
+    )
+
+
 def cmd_harden(args: argparse.Namespace) -> int:
     _print(build_harden(Path(args.out).expanduser()))
     return 0
@@ -540,6 +597,56 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--out", required=True)
         p.add_argument("--max-file-mb", type=int, default=2048)
         p.set_defaults(func=cmd_mobile)
+
+    p = sub.add_parser(
+        "boundary",
+        help="warrant-territory violations: network/removable/cloud "
+             "paths in the seized list (형소법 §215③)",
+    )
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--seized", help="raw seized list")
+    src.add_argument("--verify", help="verify.json")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_boundary)
+
+    p = sub.add_parser(
+        "containers",
+        help="hash investigators' evidence containers (.ad1/.e01/.zip) "
+             "on attached external media — before they leave",
+    )
+    p.add_argument("--out", required=True)
+    p.add_argument("--since", help="only files modified after this ISO date/time")
+    p.add_argument(
+        "--scan", action="append", default=[],
+        help="extra directory to scan (repeatable)",
+    )
+    p.add_argument(
+        "--max-hash-gb", type=float, default=128,
+        help="skip hashing containers larger than this (0 = hash "
+             "regardless — a multi-TB image takes hours)",
+    )
+    p.set_defaults(func=cmd_containers)
+
+    p = sub.add_parser(
+        "keyword-audit",
+        help="per-keyword noise ratio: how much of what was seized "
+             "fails the warrant's own criteria",
+    )
+    p.add_argument("--seized", required=True, help="seized list")
+    p.add_argument("--profile", required=True, help="warrant profile JSON")
+    p.add_argument("--root", required=True, help="filesystem root")
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_keyword_audit)
+
+    p = sub.add_parser(
+        "inquiry",
+        help="interrogation-room checker: type a filename, get the "
+             "scope verdict in one second",
+    )
+    p.add_argument("--case", required=True, help="case dir with verify/diff outputs")
+    p.add_argument("--out")
+    p.add_argument("--query", "-q", help="single lookup, non-interactive")
+    p.set_defaults(func=cmd_inquiry)
 
     p = sub.add_parser("gui", help="office-side Tkinter front-end")
     p.set_defaults(func=cmd_gui)

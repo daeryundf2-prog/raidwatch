@@ -20,13 +20,11 @@ scope is a legal question; mirroring is evidence preservation.
 from __future__ import annotations
 
 import json
+import os
 import shutil
-import tempfile
 from pathlib import Path
 
 from .common import sha256_file, utc_now_iso, write_json, write_manifest
-from .db import Inventory
-from .inventory import build_inventory
 
 SUMS_NAME = "MIRROR-SHA256SUMS.txt"
 
@@ -39,24 +37,81 @@ def _items_from_verify(verify_path: Path) -> list[dict]:
     ]
 
 
-def _items_from_list(seized_path: Path, root: Path) -> list[dict]:
-    """Resolve a raw seized list against a fresh inventory of root."""
-    from .verify import parse_seized_list, verify_items
+_SCOPED_CAP = 50_000  # max files enumerated per fuzzy fallback dir
 
-    with tempfile.TemporaryDirectory(prefix="raidwatch-mirror-") as td:
-        inv = Inventory(Path(td) / "inv.db", create=True)
-        try:
-            build_inventory(root, inv, hash_files=False)
-            seized = parse_seized_list(seized_path)
-            report = verify_items(
-                seized, inv, current_root=root
-            )
-            return [
-                it for it in report.get("items", [])
-                if it.get("matched_path")
-            ]
-        finally:
-            inv.close()
+
+def _scoped_candidates(root: Path, rel: str) -> list[str]:
+    """Files under the deepest existing ancestor dir of a broken path —
+    the fuzzy fallback's search space, bounded to that subtree."""
+    parts = rel.split("/")
+    cur = root
+    for part in parts[:-1]:
+        cand = cur / part
+        if cand.is_dir():
+            cur = cand
+        else:
+            break
+    if cur == root:
+        return []  # even the top dir is unreadable — no useful scope
+    found: list[str] = []
+    for dirpath, _dirs, files in os.walk(cur):
+        for name in files:
+            p = Path(dirpath) / name
+            try:
+                found.append(p.relative_to(root).as_posix())
+            except ValueError:
+                continue
+            if len(found) >= _SCOPED_CAP:
+                return found
+        if len(found) >= _SCOPED_CAP:
+            break
+    return found
+
+
+def _items_from_list(seized_path: Path, root: Path) -> list[dict]:
+    """Resolve a raw seized list — DIRECT PROBE first, scoped fuzzy last.
+
+    No full-disk inventory: a claimed path that survived OCR intact is
+    confirmed by os.path.is_file in microseconds. Only broken paths pay
+    for fuzzy matching, and only inside their own ancestor subtree —
+    2TB drives start mirroring in seconds, not minutes.
+    """
+    from .verify import _fuzzy_match, parse_seized_list
+
+    results = []
+    unresolved: list[tuple[dict, dict]] = []
+    for it in parse_seized_list(seized_path):
+        entry = {
+            "claimed_path": it.get("claimed_path"),
+            "claimed_sha256": it.get("sha256"),
+            "matched_path": None,
+            "status": None,
+        }
+        rel = it.get("rel")
+        if not rel or it.get("unparsed"):
+            entry["status"] = "unparsed_item"
+        elif (root / rel).is_file():
+            entry["matched_path"] = rel
+            entry["status"] = "resolved_direct"
+        else:
+            unresolved.append((it, entry))
+        results.append(entry)
+
+    for it, entry in unresolved:
+        rel = it["rel"]
+        scoped = _scoped_candidates(root, rel)
+        if scoped:
+            match, score, ambiguous = _fuzzy_match(rel, set(scoped))
+            if match is not None:
+                entry["matched_path"] = match
+                entry["status"] = "resolved_fuzzy"
+                entry["notes"] = [
+                    f"fuzzy path match score={score:.3f} "
+                    "(scoped subtree, not full disk)"
+                ]
+                continue
+        entry["status"] = "not_found"
+    return results
 
 
 def run_mirror(
@@ -84,7 +139,14 @@ def run_mirror(
     copied, sums, seen = [], [], set()
     results = []
     for it in items:
-        rel = it["matched_path"]
+        rel = it.get("matched_path")
+        if not rel:
+            results.append({
+                "claimed_path": it.get("claimed_path"),
+                "status": it.get("status") or "unresolved",
+                "notes": "path did not resolve — nothing to copy",
+            })
+            continue
         if rel in seen:
             continue
         seen.add(rel)
@@ -138,6 +200,9 @@ def run_mirror(
     )
     summary = {
         "items_resolved": len(items),
+        "unresolved": sum(
+            1 for r in results if not r.get("rel") and r["status"] != "copied"
+        ),
         "copied": len(copied),
         "missing_now": sum(1 for r in results if r["status"] == "missing_now"),
         "copy_failed": sum(1 for r in results if r["status"] == "copy_failed"),

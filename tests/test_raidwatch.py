@@ -1456,5 +1456,139 @@ class MobileTests(unittest.TestCase):
             self.assertEqual(rep["items"][0]["status"], "copied")
 
 
+class BoundaryTests(unittest.TestCase):
+    def test_classify_paths(self) -> None:
+        from raidwatch.boundary import classify_path
+
+        self.assertTrue(
+            classify_path(r"\\NAS\share\x.txt")["violation"])
+        self.assertEqual(
+            classify_path(r"\\NAS\share\x.txt")["territory"], "remote_unc")
+        self.assertTrue(
+            classify_path(r"C:\Users\u\OneDrive\a.docx")["violation"])
+        self.assertFalse(
+            classify_path(r"C:\Users\u\a.docx")["violation"])
+
+    def test_run_boundary_counts(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            seized = Path(td) / "seized.txt"
+            seized.write_text(
+                "C:\\docs\\a.pdf\n\\\\NAS\\files\\b.pdf\n", encoding="utf-8")
+            from raidwatch.boundary import run_boundary
+
+            rep = run_boundary(seized, None, Path(td) / "b")
+            self.assertEqual(rep["summary"]["total_paths"], 2)
+            self.assertGreaterEqual(rep["summary"]["violations"], 1)
+            self.assertTrue(rep["violating_paths"])
+
+
+class ContainersTests(unittest.TestCase):
+    def test_sniff_finds_container_on_extra_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            drive = Path(td) / "usb"
+            (drive / "EXPORT").mkdir(parents=True)
+            ad1 = drive / "EXPORT" / "seized.ad1"
+            ad1.write_bytes(b"ad1-payload")
+            _write(drive / "note.txt", b"not a container")
+            from raidwatch.containers import sniff_containers
+
+            rep = sniff_containers(
+                Path(td) / "c", extra_roots=[drive])
+            self.assertEqual(rep["summary"]["containers_found"], 1)
+            self.assertTrue(rep["containers"][0]["sha256"])
+            self.assertIn("seized.ad1", rep["containers"][0]["path"])
+
+    def test_sniff_since_filter(self) -> None:
+        import os
+
+        with tempfile.TemporaryDirectory() as td:
+            drive = Path(td) / "usb"
+            drive.mkdir()
+            old = drive / "old.ad1"
+            old.write_bytes(b"old")
+            past = 946684800  # 2000-01-01
+            os.utime(old, (past, past))
+            from raidwatch.containers import sniff_containers
+
+            rep = sniff_containers(
+                Path(td) / "c", extra_roots=[drive],
+                since_ns=(past + 100) * 1_000_000_000)
+            self.assertEqual(rep["summary"]["containers_found"], 0)
+
+
+class KeywordAuditTests(unittest.TestCase):
+    def test_noise_ratio(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "t"
+            _write(root / "docs" / "contract-2019.hwp", b"old")
+            _write(root / "docs" / "contract-2026.hwp", b"new")
+            _write(root / "docs" / "random.pdf", b"none")
+            # make the 2019 file predate the warrant range
+            import os
+
+            os.utime(root / "docs" / "contract-2019.hwp",
+                     (1262304000, 1262304000))  # 2010-01-01
+            profile = {
+                "profile_version": "1.0",
+                "criteria": {
+                    "keywords": [{"term": "contract"}],
+                    "date_ranges": [
+                        {"field": "mtime", "from": "2025-01-01",
+                         "to": "2027-01-01"}
+                    ],
+                },
+            }
+            seized = Path(td) / "seized.txt"
+            seized.write_text(
+                "C:\\docs\\contract-2019.hwp\n"
+                "C:\\docs\\contract-2026.hwp\n"
+                "C:\\docs\\random.pdf\n",
+                encoding="utf-8",
+            )
+            (Path(td) / "p.json").write_text(
+                json.dumps(profile), encoding="utf-8")
+            from raidwatch.audit import run_keyword_audit
+            from raidwatch.profile import load_profile
+
+            rep = run_keyword_audit(
+                seized, load_profile(Path(td) / "p.json"),
+                root, Path(td) / "a")
+            kw = rep["keywords"][0]
+            self.assertEqual(kw["seized"], 2)
+            self.assertEqual(kw["out_of_scope"], 1)
+            self.assertEqual(kw["in_scope"], 1)
+            self.assertAlmostEqual(kw["noise_ratio"], 0.5)
+            self.assertEqual(
+                rep["summary"]["unattributed_items"], 1)
+
+
+class InquiryTests(unittest.TestCase):
+    def test_query_verdict(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as td:
+            case = Path(td) / "case"
+            (case / "verify").mkdir(parents=True)
+            (case / "verify" / "verify.json").write_text(json.dumps({
+                "items": [{
+                    "claimed_path": "C:\\x\\outside.docx",
+                    "matched_path": "x/outside.docx",
+                    "status": "verified",
+                    "scope_verdict": "out_of_scope",
+                    "notes": [],
+                }],
+                "summary": {"total": 1},
+            }), encoding="utf-8")
+            from raidwatch.inquiry import load_case_index, query
+
+            idx = load_case_index(case)
+            self.assertEqual(len(idx["items"]), 1)
+            answer = query(idx, "outside.docx")
+            self.assertIn("OUT_OF_SCOPE", answer)
+            self.assertIn("기록 없음", query(idx, "nothing.xyz"))
+
+
 if __name__ == "__main__":
     unittest.main()

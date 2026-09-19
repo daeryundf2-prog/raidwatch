@@ -13,8 +13,9 @@
 | 사전 (raid 이전) | `baseline`, `watch`, `harden` | 기준선 인벤토리+해시, 변경 감시, OS 감사 기록 활성화 |
 | 집행 중 | `watch` (사전 설치 시) | 수사 도구 행위의 수동적 관찰 기록 |
 | 사후 | `scan`, `diff`, `verify`, `sources`, `artifacts`, `carve`, `journal` | 독립 재현, 전후 비교, 목록 검증, 원본 회수, 행위 재구성 |
+| 사후 (분석) | `boundary`, `keyword-audit`, `containers`, `mirror` | 관할 위반·노이즈율·컨테이너 해시·맞복사 |
 | 배포/수거 | `bundle`, `field`, `collect` | 키트 생성 → 의뢰인 PC 실행 → 산출물만 회수 |
-| 사무실 | `gui`, `package` | Tkinter 프런트엔드, 법적 검토 패키지 |
+| 사무실 | `gui`, `package`, `petition`, `inquiry` | Tkinter 프런트엔드, 검토 패키지, 인쇄 서면, 조사실 확인기 |
 
 ## 사용법
 
@@ -105,6 +106,23 @@ python -m raidwatch lockbox --out case/<case_id>/lockbox
 # 14. PC 잔존 모바일 데이터 — 카톡 PC DB·iTunes/SmartSwitch 백업 보존
 python -m raidwatch mobile C:\ --out case/<case_id>/mobile
 
+# 15. 관할 경계 — NAS/외장/클라우드 영역에서 가져간 항목 자동 플래그
+python -m raidwatch boundary --seized seized-list.txt --out case/<case_id>/boundary
+python -m raidwatch boundary --verify case/<case_id>/verify/verify.json \
+  --out case/<case_id>/boundary
+
+# 16. 증거 컨테이너 탐지 — 수사관 외장매체의 .ad1/.e01/.zip 해시 기록
+python -m raidwatch containers --out case/<case_id>/containers \
+  --since 2026-09-19 --scan E:\ --max-hash-gb 128
+
+# 17. 키워드 노이즈율 — '계약' 키워드로 가져간 3,000건 중 범위 외 비율
+python -m raidwatch keyword-audit --seized seized-list.txt \
+  --profile warrant.json --root C:\ --out case/<case_id>/keyword-audit
+
+# 18. 조사실 1초 확인 — 수사관이 들이민 파일명 → 범위 판정 즉시 출력
+python -m raidwatch inquiry --case case/<case_id>          # 대화형
+python -m raidwatch inquiry --case case/<case_id> -q '보고서.hwp'
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -130,11 +148,15 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 은닉 스트림을 드러낸다 | `artifacts` | NTFS ADS 열거 — `file.txt:숨김:$DATA` 같은 고전적 수법 |
 | OS가 미리 다 기록하게 한다 | `harden` | 집행 전 USN/감사정책/PS로깅 활성화 → 수사관 행위가 로그로 남음 |
 | 해시 하나로 전체를 봉인한다 | `field` → custody.txt | 산출물 해시의 해시 → 즉시 이메일 발송 = 시점 고정 증거 |
-| 수사관이 가져간 걸 똑같이 가져온다 | `mirror` | verify/목록 기준 맞복사 — 구조 보존 + 우리 해시로 독립 기록 |
+| 수사관이 가져간 걸 똑같이 가져온다 | `mirror` | verify/목록 기준 맞복사 — Direct Probe로 2TB도 즉시 시작 |
 | 도장 밑 글자를 읽는다 | OCR `-RemoveRedStamps` | 인주(빨간 도장) 잉크를 지우고 OCR → 인식률 회복 |
 | 서면을 바로 뽑는다 | `petition` | 검증 데이터 → A4 인쇄 최적화 환부·폐기 청구서 HTML |
 | 전원이 꺼지기 전에 키를 뺀다 | `lockbox` | BitLocker 복구키+볼륨맵 긴급 보존 — 재부팅=영구 잠금 방지 |
 | 폰은 가져가도 DB는 남는다 | `mobile` | 카톡 PC DB·iTunes/SmartSwitch 백업·데스크톱 메신저 보존 |
+| 영장 없는 NAS를 건드리면 잡힌다 | `boundary` | UNC·매핑드라이브·클라우드 경로 → warrant_territory_violation |
+| 수사관의 증거 파일을 먼저 해시한다 | `containers` | 외장매체의 신규 .ad1/.e01/.zip 해시 → 나중에 바꿔치기하면 탄핵 |
+| 키워드 폭탄을 숫자로 바꾼다 | `keyword-audit` | 키워드별 노이즈율 95% → 구체성·비례 원칙 위배 수치화 |
+| 조사실에서 1초 만에 답한다 | `inquiry` | 파일명 입력 → 범위 판정·diff 상태 즉시 출력 → 진술거부 판단 근거 |
 
 ## 검증 시 두 가지 역발상
 

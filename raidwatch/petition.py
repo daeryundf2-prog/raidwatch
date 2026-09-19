@@ -78,6 +78,11 @@ def run_petition(
         verify = _load_json(case_dir / "steps" / "verify" / "verify.json")
     diff = _load_json(case_dir / "diff" / "diff.json") or _load_json(
         case_dir / "steps" / "diff" / "diff.json")
+    boundary = _load_json(case_dir / "boundary" / "boundary.json") or _load_json(
+        case_dir / "steps" / "boundary" / "boundary.json")
+    kw_audit = _load_json(
+        case_dir / "keyword-audit" / "keyword-audit.json") or _load_json(
+        case_dir / "steps" / "keyword-audit" / "keyword-audit.json")
     field = _load_json(case_dir / "field.json")
     seizure = (field or {}).get("seizure_info", {})
 
@@ -104,6 +109,32 @@ def run_petition(
         f"<th>독립 검증 상태</th><th>범위 판정</th></tr>{''.join(rows)}</table>"
         if rows else "<p>대상 항목 없음.</p>"
     )
+
+    # Grounds 5/6 — only appear when the data supports them.
+    special = ""
+    n_para = 5
+    viol = (boundary or {}).get("summary", {}).get("violations", 0)
+    if viol:
+        special += (
+            f"<p>{n_para}. 압수 목록 중 {viol}건은 본 건 영장 대상인 로컬 "
+            "저장매체가 아니라 네트워크 공유·외장 드라이브·클라우드 동기화 "
+            "영역의 전자정보로서, 형사소송법 제215조 제3항의 원격지 압수수색 "
+            "요건을 갖추지 못한 중대한 위법 압수물입니다.</p>"
+        )
+        n_para += 1
+    asum = (kw_audit or {}).get("summary", {})
+    kws = (kw_audit or {}).get("keywords", [])
+    if kws and asum.get("overall_noise_ratio") is not None:
+        pct = round(asum["overall_noise_ratio"] * 100, 1)
+        worst = max(kws, key=lambda k: k.get("noise_ratio", 0))
+        special += (
+            f"<p>{n_para}. 압수 항목을 영장 키워드별로 역분석한 결과 전체 "
+            f"노이즈율(영장 자체 조건 불부합 비율)이 {pct}%에 이르고, 키워드 "
+            f"‘{_esc(worst['term'])}’ 단독으로는 "
+            f"{round(worst['noise_ratio'] * 100, 1)}%에 이르러 영장의 "
+            "구체성 및 비례의 원칙을 위배하였습니다.</p>"
+        )
+        n_para += 1
 
     today = datetime.now(timezone.utc).strftime("%Y. %m. %d.")
     doc = f"""<!DOCTYPE html>
@@ -139,6 +170,7 @@ def run_petition(
 허용하고 있습니다.</p>
 <p>4. 따라서 별지 목록의 범위 외 압수물은 즉시 폐기하고, 이미 반출된
 원본은 환부하여야 합니다.</p>
+{special}
 
 <h2>별 지: 독립 검증 결과 범위 외·부재 압수물 목록</h2>
 {items_table}
