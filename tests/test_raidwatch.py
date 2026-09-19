@@ -936,6 +936,23 @@ class BundleFieldTests(unittest.TestCase):
             sh = (kit_dir / "RUN.sh").read_text(encoding="utf-8")
             self.assertIn("raid_datetime", sh)
 
+    def test_bundle_ships_picker_dialog(self) -> None:
+        from raidwatch.bundle import build_bundle
+
+        with tempfile.TemporaryDirectory() as td:
+            kit = build_bundle(Path(td) / "kit")
+            kit_dir = Path(kit["kit_dir"])
+            ps1 = (kit_dir / "KIT-INPUT.ps1").read_text(encoding="utf-8")
+            self.assertIn("DateTimePicker", ps1)
+            self.assertIn("OpenFileDialog", ps1)
+            self.assertIn("answers.txt", ps1)
+            bat = (kit_dir / "RUN.bat").read_text(encoding="utf-8")
+            self.assertIn("KIT-INPUT.ps1", bat)
+            self.assertIn("ANS_%%a", bat)
+            self.assertIn("ANS_skip", bat)
+            # braces balanced in the shipped script
+            self.assertEqual(ps1.count("{"), ps1.count("}"))
+
     def test_bundle_baked_seized_skips_question(self) -> None:
         from raidwatch.bundle import build_bundle
 

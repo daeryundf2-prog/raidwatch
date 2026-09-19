@@ -70,10 +70,6 @@ if exist CONFIG.txt (
 )
 if "%DEST%"=="" if defined CFG_dest set "DEST=%CFG_dest%"
 
-set "RAIDTIME=%CFG_raid_datetime%"
-if not defined RAIDTIME set /p RAIDTIME="Seizure date/time (e.g. 2026-09-19 14:30): "
-if defined RAIDTIME echo Seizure date/time: %RAIDTIME% (preset)
-
 set "SEIZED="
 set "SEXT="
 set "SEIZEDBAKED="
@@ -85,16 +81,46 @@ if exist inputs\seized.* (
     )
     set "SEIZEDBAKED=1"
     echo Seized list already provided: %SEIZED%
-) else (
-    set /p SEIZED="Seized-list file (drag it here, or Enter): "
 )
 
+rem Anything not preset → clickable dialog (native WinForms calendar
+rem picker + file browser; writes inputs\answers.txt). If the dialog
+rem is unavailable we fall through to plain console questions.
+set "NEEDGUI="
+if not defined CFG_raid_datetime set "NEEDGUI=1"
+if not defined SEIZEDBAKED set "NEEDGUI=1"
+if not defined CFG_stamp set "NEEDGUI=1"
+if not defined CFG_notes set "NEEDGUI=1"
+if defined NEEDGUI if exist KIT-INPUT.ps1 (
+    powershell -NoProfile -ExecutionPolicy Bypass -File KIT-INPUT.ps1 -KitDir "%~dp0" >nul 2>&1
+    if exist inputs\answers.txt (
+        for /f "usebackq tokens=1,* delims== eol=#" %%a in ("inputs\answers.txt") do set "ANS_%%a=%%b"
+    )
+    if not defined SEIZEDBAKED if exist inputs\seized.* (
+        for %%f in (inputs\seized.*) do (
+            set "SEIZED=%%f"
+            set "SEXT=%%~xf"
+        )
+        set "SEIZEDBAKED=1"
+        echo Seized list picked in dialog: %SEIZED%
+    )
+)
+
+set "RAIDTIME=%CFG_raid_datetime%"
+if not defined RAIDTIME set "RAIDTIME=%ANS_raid_datetime%"
+if not defined RAIDTIME if not defined ANS_skip set /p RAIDTIME="Seizure date/time (e.g. 2026-09-19 14:30): "
+if defined RAIDTIME echo Seizure date/time: %RAIDTIME%
+
+if not defined SEIZEDBAKED if not defined ANS_skip set /p SEIZED="Seized-list file (drag it here, or Enter): "
+
 set "STAMP=%CFG_stamp%"
+if not defined STAMP set "STAMP=%ANS_stamp%"
 if /i "%STAMP%"=="ask" set "STAMP="
-if not defined STAMP set /p STAMP="Red stamps covering list text? (y/N): "
+if not defined STAMP if not defined ANS_skip set /p STAMP="Red stamps covering list text? (y/N): "
 
 set "NOTES=%CFG_notes%"
-if not defined NOTES set /p NOTES="Case no. / notes (or Enter): "
+if not defined NOTES set "NOTES=%ANS_notes%"
+if not defined NOTES if not defined ANS_skip set /p NOTES="Case no. / notes (or Enter): "
 
 if not exist inputs mkdir inputs
 set "SEIZED=%SEIZED:"=%"
@@ -154,6 +180,118 @@ echo raidwatch-results.zip and SHA256SUMS.txt for verification.
 echo TIP: email custody.txt to counsel now — its hash timestamps the evidence set.
 pause
 endlocal
+"""
+
+_KIT_INPUT_PS1 = r"""param(
+    [string]$Out = "inputs\answers.txt",
+    [string]$KitDir = "."
+)
+# KIT-INPUT.ps1 — clickable input dialog for the field kit.
+# Native WinForms (DateTimePicker calendar + OpenFileDialog) — zero
+# installs on any Windows 10+. Writes inputs\answers.txt in the same
+# key=value format as CONFIG.txt; copies a chosen seized list into
+# inputs\. "모두 건너뛰기" (or closing the window) writes skip=1 so
+# RUN.bat proceeds without asking anything on the console.
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+[System.Windows.Forms.Application]::EnableVisualStyles()
+
+$form = New-Object System.Windows.Forms.Form
+$form.Text = "raidwatch - 압수수색 대응 분석"
+$form.ClientSize = New-Object System.Drawing.Size(440, 300)
+$form.StartPosition = "CenterScreen"
+$form.TopMost = $true
+$form.FormBorderStyle = "FixedDialog"
+$form.MaximizeBox = $false
+
+function Add-Label($text, $y) {
+    $l = New-Object System.Windows.Forms.Label
+    $l.Text = $text
+    $l.AutoSize = $true
+    $l.Location = New-Object System.Drawing.Point(16, $y)
+    $form.Controls.Add($l)
+}
+
+Add-Label "집행(압수수색) 일시 — 달력에서 클릭 선택. 모르면 체크 해제" 12
+$dtp = New-Object System.Windows.Forms.DateTimePicker
+$dtp.Format = [System.Windows.Forms.DateTimePickerFormat]::Custom
+$dtp.CustomFormat = "yyyy-MM-dd HH:mm"
+$dtp.ShowCheckBox = $true          # unchecked = unknown / skip
+$dtp.Checked = $true
+$dtp.Width = 200
+$dtp.Location = New-Object System.Drawing.Point(16, 36)
+$form.Controls.Add($dtp)
+
+Add-Label "압수 목록 파일 (선택사항 — txt/csv/json/pdf/사진)" 74
+$txtFile = New-Object System.Windows.Forms.TextBox
+$txtFile.ReadOnly = $true
+$txtFile.Width = 300
+$txtFile.Location = New-Object System.Drawing.Point(16, 98)
+$form.Controls.Add($txtFile)
+$btnFile = New-Object System.Windows.Forms.Button
+$btnFile.Text = "파일 선택..."
+$btnFile.Width = 100
+$btnFile.Location = New-Object System.Drawing.Point(324, 96)
+$ofd = New-Object System.Windows.Forms.OpenFileDialog
+$ofd.Title = "압수 목록 파일 선택"
+$ofd.Filter = "압수 목록|*.txt;*.csv;*.json;*.pdf;*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff|모든 파일|*.*"
+$btnFile.Add_Click({
+    if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
+        $txtFile.Text = $ofd.FileName
+    }
+})
+$form.Controls.Add($btnFile)
+
+$chkStamp = New-Object System.Windows.Forms.CheckBox
+$chkStamp.Text = "목록에 빨간 인주 도장이 글자를 가림"
+$chkStamp.AutoSize = $true
+$chkStamp.Location = New-Object System.Drawing.Point(16, 134)
+$form.Controls.Add($chkStamp)
+
+Add-Label "사건번호 / 메모 (선택사항)" 166
+$txtNotes = New-Object System.Windows.Forms.TextBox
+$txtNotes.Width = 408
+$txtNotes.Location = New-Object System.Drawing.Point(16, 190)
+$form.Controls.Add($txtNotes)
+
+$answers = Join-Path $KitDir $Out
+$seizedDest = $null
+
+$btnOK = New-Object System.Windows.Forms.Button
+$btnOK.Text = "분석 시작"
+$btnOK.Width = 200
+$btnOK.Location = New-Object System.Drawing.Point(16, 240)
+$btnOK.DialogResult = [System.Windows.Forms.DialogResult]::OK
+$form.Controls.Add($btnOK)
+$form.AcceptButton = $btnOK
+
+$btnSkip = New-Object System.Windows.Forms.Button
+$btnSkip.Text = "모두 건너뛰기"
+$btnSkip.Width = 200
+$btnSkip.Location = New-Object System.Drawing.Point(224, 240)
+$btnSkip.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+$form.Controls.Add($btnSkip)
+
+$result = $form.ShowDialog()
+New-Item -ItemType Directory -Force -Path (Split-Path $answers) | Out-Null
+$lines = @()
+if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+    if ($dtp.Checked) {
+        $lines += "raid_datetime=" + $dtp.Value.ToString("yyyy-MM-dd HH:mm")
+    }
+    $lines += "stamp=" + $(if ($chkStamp.Checked) { "y" } else { "n" })
+    if ($txtNotes.Text.Trim()) {
+        $lines += "notes=" + ($txtNotes.Text.Trim() -replace "[\r\n=]", " ")
+    }
+    if ($txtFile.Text -and (Test-Path -LiteralPath $txtFile.Text)) {
+        $ext = [IO.Path]::GetExtension($txtFile.Text)
+        Copy-Item -LiteralPath $txtFile.Text `
+            -Destination (Join-Path $KitDir "inputs\seized$ext") -Force
+    }
+} else {
+    $lines += "skip=1"
+}
+[IO.File]::WriteAllLines($answers, $lines)
 """
 
 _CONFIG_TXT = """\
@@ -388,15 +526,16 @@ _README = """raidwatch field kit — 압수수색 대응 분석 키트
 - raidwatch.pyz 만 있는 키트: Python 3.11+가 필요합니다
   (없으면 발송자에게 exe 포함 키트를 요청하세요).
 
-실행하면 먼저 세 가지를 물어봅니다 (전부 선택사항 — Enter로 건너뛰기):
-  1. 압수수색 집행 일시  — 예: 2026-09-19 14:30, 2026년 9월 19일 오후 2시
-     입력하면 그 시각 이후 만들어진 파일만 골라내는 데 씁니다.
-  2. 압수 목록 파일     — txt/csv/json은 바로 검증됩니다.
-     PDF는 글자를 고를 수 있는(텍스트가 살아있는) PDF면 자동 처리되고,
-     스캔/사진 PDF·jpg·png는 Windows 내장 OCR로 자동 읽기를 시도합니다
-     (Windows 10+, 한글 언어팩 있으면 한글도 인식 — 설치 불필요).
-     이 창에 파일을 끌어다 놓으면 됩니다.
-  3. 사건번호/메모     — 결과물에 함께 기록됩니다.
+실행하면 입력 창이 뜹니다 (클릭으로 선택 — 타이핑 거의 불필요):
+  1. 압수수색 집행 일시  — 달력에서 날짜를 클릭해서 고릅니다.
+     모르면 체크를 해제하면 됩니다.
+  2. 압수 목록 파일     — "파일 선택..." 버튼으로 고릅니다.
+     txt/csv/json은 바로 검증되고, PDF는 텍스트가 살아있으면 자동
+     처리, 스캔/사진은 Windows 내장 OCR로 자동 읽기를 시도합니다.
+  3. 인주 도장 체크    — 빨간 도장이 글자를 가리면 체크합니다.
+  4. 사건번호/메모     — 모르면 비워둡니다.
+  ※ 대화상자가 안 뜨는 환경에서는 검은 창에 직접 입력하게 됩니다
+    (전부 Enter로 건너뛸 수 있습니다).
 
 답변은 inputs/info.txt 에 저장되어 결과 zip 안의 field-report.json 에
 기록됩니다. 압수 목록을 나중에 받았으면 inputs/ 폴더에
@@ -506,6 +645,9 @@ def build_bundle(
     run_sh.chmod(0o755)
     (out_dir / "OCR-LIST.ps1").write_text(
         _OCR_PS1, encoding="utf-8", newline="\r\n"
+    )
+    (out_dir / "KIT-INPUT.ps1").write_text(
+        _KIT_INPUT_PS1, encoding="utf-8", newline="\r\n"
     )
     (out_dir / "README.txt").write_text(_README, encoding="utf-8")
 
