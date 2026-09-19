@@ -11,3 +11,5 @@ watch-state.json
 events.jsonl
 .DS_Store
 dist-ci/
+rwkit-win/
+rwkit-win.zip
