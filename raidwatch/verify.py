@@ -48,6 +48,7 @@ def _claim_algo(key: str, digest: str) -> str:
 
 def _norm_rel(path: str) -> str:
     text = path.strip().replace("\\", "/")
+    text = re.sub(r"/{2,}", "/", text)  # 'C:\\a\\b' exports → 'a/b'
     if re.match(r"^[A-Za-z]:/", text):
         text = text[2:]
     return text.lstrip("/")
@@ -183,8 +184,17 @@ def _parse_xlsx_list(path: Path) -> list[dict]:
     """
     from .xlsx_read import iter_seized_rows
 
+    try:
+        rows = iter_seized_rows(path)
+    except Exception as exc:
+        return [{
+            "claimed_path": None, "rel": None, "sha256": None,
+            "hash_algo": None, "unparsed": True,
+            "raw": {"xlsx": f"unreadable workbook: {exc}"},
+        }]
+
     items: list[dict] = []
-    for row in iter_seized_rows(path):
+    for row in rows:
         claimed = row["path"] or row["name"]
         if not claimed:
             items.append({

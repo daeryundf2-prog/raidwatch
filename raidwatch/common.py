@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TOOL_NAME = "raidwatch"
-TOOL_VERSION = "0.9.0"
+TOOL_VERSION = "0.9.1"
 _CHUNK = 1024 * 1024
 _FILETIME_EPOCH_NS = 116444736000000000  # 1601-01-01 in 100ns units *100
 

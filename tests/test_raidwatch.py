@@ -27,6 +27,53 @@ def _write(path: Path, data: bytes) -> Path:
     return path
 
 
+def _backdate_creation(path: Path, epoch_s: float) -> bool:
+    """Set a file's creation time backwards — os.utime only moves
+    atime/mtime, but the window/leftovers logic keys on btime/ctime.
+
+    Windows: SetFileTime can rewrite creation time. POSIX: nothing can
+    (btime is immutable, ctime is metadata-change) — callers should
+    skipTest when this returns False and the signal still looks new.
+    """
+    if os.name != "nt":
+        return False
+    import ctypes
+    from ctypes import wintypes
+
+    ft = int((epoch_s + 11644473600) * 10_000_000)  # unix s → FILETIME
+
+    class _FT(ctypes.Structure):
+        _fields_ = [
+            ("dwLowDateTime", wintypes.DWORD),
+            ("dwHighDateTime", wintypes.DWORD),
+        ]
+
+    buf = _FT(ft & 0xFFFFFFFF, (ft >> 32) & 0xFFFFFFFF)
+    h = ctypes.windll.kernel32.CreateFileW(
+        str(path),
+        0x0100,       # FILE_WRITE_ATTRIBUTES
+        0x00000007,   # share rw+delete
+        None,
+        3,            # OPEN_EXISTING
+        0x02000000,   # FILE_FLAG_BACKUP_SEMANTICS
+        None,
+    )
+    if h in (-1, wintypes.HANDLE(-1).value):
+        return False
+    try:
+        ok = ctypes.windll.kernel32.SetFileTime(
+            h, ctypes.byref(buf), None, None)
+    finally:
+        ctypes.windll.kernel32.CloseHandle(h)
+    return bool(ok)
+
+
+def _creation_signal(path: Path) -> float:
+    st = path.lstat()
+    bt = getattr(st, "st_birthtime", None)
+    return bt if bt is not None else st.st_ctime
+
+
 class RaidwatchFixture:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -1655,6 +1702,12 @@ class WindowTests(unittest.TestCase):
             past = 1262304000  # 2010 — clearly before the raid
             os.utime(root / "before.txt", (past, past))
             since_ns = int((time.time() - 3600) * 1_000_000_000)
+            _backdate_creation(root / "before.txt", past)
+            if _creation_signal(root / "before.txt") > since_ns / 1e9:
+                self.skipTest(
+                    "platform cannot backdate creation time — "
+                    "before.txt always looks created-in-window"
+                )
             from raidwatch.window import scan_window
 
             rep = scan_window(
@@ -1806,6 +1859,7 @@ class LeftoversTests(unittest.TestCase):
         old = desk / "normal.txt"
         old.write_bytes(b"old")
         os.utime(old, (1_000_000_000, 1_000_000_000))
+        _backdate_creation(old, 1_000_000_000)
         # recycle bin: 압수물목록.hwp deleted inside the window
         name = "C:\\Users\\pc\\Desktop\\압수물목록.hwp"
         nb = name.encode("utf-16-le") + b"\x00\x00"
@@ -1823,6 +1877,12 @@ class LeftoversTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as td:
             base = self._fixture(td)
+            if _creation_signal(base / "Users/pc/Desktop/normal.txt"
+                                ) > iso_to_ns("2026-09-19 10:00") / 1e9:
+                self.skipTest(
+                    "platform cannot backdate creation time — "
+                    "normal.txt always counts as a live hit"
+                )
             rep = run_leftovers(
                 [base], Path(td) / "out",
                 since_ns=iso_to_ns("2026-09-19 10:00"),

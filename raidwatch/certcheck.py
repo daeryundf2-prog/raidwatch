@@ -67,7 +67,25 @@ def _members(package: Path) -> list[tuple[str, "bytes | Path"]]:
             for info in zf.infolist():
                 if info.is_dir():
                     continue
-                out.append((info.filename, zf.read(info.filename)))
+                data = zf.read(info.filename)
+                out.append((info.filename, data))
+                # nested archives (시스템정보.zip etc.) may hold the
+                # detail list — peek one level for xlsx/pdf members
+                if info.filename.lower().endswith(".zip"):
+                    try:
+                        inner = zipfile.ZipFile(io.BytesIO(data))
+                    except zipfile.BadZipFile:
+                        continue
+                    for ii in inner.infolist():
+                        ilow = ii.filename.lower()
+                        if ii.is_dir() or not ilow.endswith(
+                            (".xlsx", ".pdf")
+                        ):
+                            continue
+                        out.append((
+                            f"{info.filename}!{ii.filename}",
+                            inner.read(ii.filename),
+                        ))
         return sorted(out, key=lambda kv: kv[0])
     return [(package.name, package)]
 
@@ -257,7 +275,7 @@ def run_certcheck(
             inventory["xlsx"].append(name)
             try:
                 rows.extend(iter_seized_rows(_open_bytes(payload)))
-            except (zipfile.BadZipFile, KeyError) as exc:
+            except Exception as exc:
                 inventory.setdefault("unreadable", []).append(
                     f"{name}: {exc}"
                 )
@@ -270,9 +288,10 @@ def run_certcheck(
                     else Path(payload).read_bytes()
                 )
                 detail_text = _pdf_text(data) or ""
-                detail_hash_hits += len(
-                    re.findall(r"[0-9a-fA-F]{40}", detail_text)
-                )
+                detail_hash_hits += len(re.findall(
+                    r"(?<![0-9a-fA-F])[0-9a-fA-F]{40}(?![0-9a-fA-F])",
+                    detail_text,
+                ))
             elif "서식" in base or "확인서" in base:
                 inventory["form_pdf"].append(name)
                 m = _CERT_TS_RE.search(base)
@@ -290,6 +309,16 @@ def run_certcheck(
             inventory["other"].append(name)
 
     findings, summary = audit_rows(rows, cert_ts=cert_ts)
+    if not inventory["xlsx"]:
+        findings.append({
+            "check": "no_detail_xlsx",
+            "severity": "info",
+            "count": 1,
+            "detail": "package contains no .xlsx detail list — only "
+                      "the printed/scanned PDFs; the row-level checks "
+                      "below need the machine-readable list (or OCR)",
+            "samples": [],
+        })
 
     # printed detail list ↔ xlsx row cross-check
     if inventory["detail_pdf"]:
@@ -308,17 +337,16 @@ def run_certcheck(
                 1 for r in rows if r.get("sha1") or r.get("sha256")
                 or r.get("md5")
             )
+            diverge = detail_hash_hits != xlsx_hashes
             findings.append({
                 "check": "detail_pdf_crosscheck",
-                "severity": "warn" if detail_hash_hits < xlsx_hashes
-                           else "ok",
+                "severity": "warn" if diverge else "ok",
                 "count": abs(detail_hash_hits - xlsx_hashes),
                 "detail": (
                     f"printed 상세목록 contains {detail_hash_hits} "
                     f"hash strings vs {xlsx_hashes} hashed xlsx rows"
                     + (" — printed and delivered lists diverge"
-                       if detail_hash_hits < xlsx_hashes
-                       else " — consistent")
+                       if diverge else " — consistent")
                 ),
                 "samples": [],
             })
