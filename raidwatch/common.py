@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 TOOL_NAME = "raidwatch"
-TOOL_VERSION = "0.8.8"
+TOOL_VERSION = "0.9.0"
 _CHUNK = 1024 * 1024
 _FILETIME_EPOCH_NS = 116444736000000000  # 1601-01-01 in 100ns units *100
 
@@ -63,11 +63,31 @@ def sha256_file(path: Path, max_bytes: int | None = None) -> str | None:
     return digest
 
 
+def hash_file(
+    path: Path,
+    algo: str,
+    max_bytes: int | None = None,
+) -> str | None:
+    """Stream-hash a file with an arbitrary algorithm (md5/sha1/sha512…).
+
+    Investigator lists claim SHA1/MD5 — verifying those claims needs the
+    same algorithm, not our baseline sha256. Returns None for unknown
+    algorithms or files exceeding max_bytes.
+    """
+    try:
+        hashlib.new(algo)
+    except (ValueError, TypeError):
+        return None
+    digest, _ = sha256_file_preserve(path, max_bytes, algo=algo)
+    return digest
+
+
 def sha256_file_preserve(
     path: Path,
     max_bytes: int | None = None,
     *,
     restore_ns: tuple[int, int] | None = None,
+    algo: str = "sha256",
 ) -> tuple[str | None, str]:
     """Hash a file without permanently advancing atime.
 
@@ -85,7 +105,7 @@ def sha256_file_preserve(
     """
     import os
 
-    digest = hashlib.sha256()
+    digest = hashlib.new(algo)
     total = 0
     noatime = getattr(os, "O_NOATIME", 0)
     mode = "none"

@@ -1,8 +1,10 @@
 """Seized-list parsing and verification.
 
-Parses the evidence list delivered by investigators (JSON/CSV/plain text),
-cross-checks each item against a baseline or live re-inventory, verifies
-claimed hashes, and classifies warrant scope under narrow/broad readings.
+Parses the evidence list delivered by investigators (JSON/CSV/plain text/
+PDF text layer/.xlsx detail lists incl. the 경찰 전자정보확인서 상세목록
+format), cross-checks each item against a baseline or live re-inventory,
+verifies claimed hashes, and classifies warrant scope under narrow/broad
+readings.
 """
 
 from __future__ import annotations
@@ -13,14 +15,27 @@ import json
 import re
 from pathlib import Path
 
-from .common import sha256_file, write_json, write_manifest
+from .common import hash_file, sha256_file, write_json, write_manifest
 from .db import Inventory
 from .profile import evaluate
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{32,128}$")
-_PATH_KEYS = ("path", "file", "filepath", "file_path", "filename", "name")
+_PATH_KEYS = (
+    "path", "file", "filepath", "file_path", "filename", "name",
+    "경로", "파일경로", "파일 경로", "전체 파일 경로", "파일명",
+)
 # algo-specific keys first; bare "hash" algorithm is inferred from length
-_HASH_KEYS = ("sha256", "sha-256", "sha1", "sha-1", "md5", "hash")
+_HASH_KEYS = (
+    "sha256", "sha-256", "sha-256 해시", "sha256 해시",
+    "sha1", "sha-1", "sha-1 해시", "sha1 해시",
+    "md5", "md5 해시", "hash", "해시",
+)
+# JSON keys (beyond "items") that hold the claimed file list — covers
+# ForensicArtifactCollector report.json and similar tool exports
+_JSON_LIST_KEYS = (
+    "items", "likely_seized_files", "selected_files", "seized",
+    "seized_files", "files", "file_paths",
+)
 _ALGO_BY_LEN = {32: "md5", 40: "sha1", 64: "sha256", 128: "sha512"}
 
 
@@ -71,12 +86,39 @@ def parse_seized_list(path: Path | str) -> list[dict]:
             }]
         return _parse_text_lines(text)
 
+    if suffix == ".xlsx":
+        return _parse_xlsx_list(path)
+    if suffix == ".xls":
+        return [{
+            "claimed_path": None, "rel": None, "sha256": None,
+            "hash_algo": None, "unparsed": True,
+            "raw": {
+                "xls": "legacy binary .xls — re-save as .xlsx or export "
+                       "to CSV and retry",
+            },
+        }]
+
     text = path.read_text(encoding="utf-8", errors="replace")
 
     items: list[dict] = []
     if suffix == ".json" or text.lstrip().startswith(("[", "{")):
         data = json.loads(text)
-        rows = data.get("items", data) if isinstance(data, dict) else data
+        rows: object = data
+        if isinstance(data, dict):
+            rows = None
+            for key in _JSON_LIST_KEYS:
+                if isinstance(data.get(key), list):
+                    rows = data[key]
+                    break
+            if rows is None:
+                return [{
+                    "claimed_path": None, "rel": None, "sha256": None,
+                    "hash_algo": None, "unparsed": True,
+                    "raw": {
+                        "json": "object has no file-list key "
+                                f"(looked for {', '.join(_JSON_LIST_KEYS)})",
+                    },
+                }]
         for entry in rows:
             if isinstance(entry, str):
                 items.append(_mk_item(entry, None))
@@ -129,6 +171,46 @@ def _parse_text_lines(text: str) -> list[dict]:
             digest, line = parts[0].lower(), parts[1].strip()
             algo = _ALGO_BY_LEN.get(len(digest), "sha256")
         items.append(_mk_item(line, digest, algo))
+    return items
+
+
+def _parse_xlsx_list(path: Path) -> list[dict]:
+    """Parse the 전자정보확인서-style .xlsx detail list.
+
+    Rows carry the claimed SHA1/MD5/SHA256 plus size and timestamps —
+    extras are preserved under "claimed_meta" for downstream audit
+    (certcheck) while verify uses path+hash as usual.
+    """
+    from .xlsx_read import iter_seized_rows
+
+    items: list[dict] = []
+    for row in iter_seized_rows(path):
+        claimed = row["path"] or row["name"]
+        if not claimed:
+            items.append({
+                "claimed_path": None, "rel": None, "sha256": None,
+                "hash_algo": None, "unparsed": True, "raw": row,
+            })
+            continue
+        digest = algo = None
+        for cand in ("sha256", "sha1", "md5"):
+            if row.get(cand):
+                digest, algo = row[cand].lower(), cand
+                break
+        item = _mk_item(claimed, digest, algo or "sha256")
+        item["claimed_meta"] = {
+            k: row[k] for k in
+            ("seq", "name", "ext", "size", "created", "modified",
+             "accessed", "sheet", "row")
+            if row.get(k)
+        }
+        items.append(item)
+    if not items:
+        return [{
+            "claimed_path": None, "rel": None, "sha256": None,
+            "hash_algo": None, "unparsed": True,
+            "raw": {"xlsx": "no recognizable seized-list rows found"},
+        }]
     return items
 
 
@@ -279,13 +361,34 @@ def verify_items(
         claimed = (item["sha256"] or "").lower() or None
         algo = item.get("hash_algo") or "sha256"
         if claimed and algo != "sha256":
-            # Printed list hash is md5/sha1/etc — cannot compare with our
-            # sha256 inventory; NOT a mismatch.
-            entry["status"] = "verified"
-            summary["hash_incomparable"] += 1
-            entry["notes"].append(
-                f"claimed {algo} hash not comparable to baseline sha256"
+            # Printed list hash is md5/sha1/etc — not comparable to our
+            # sha256 baseline. But if the returned PC is at hand we can
+            # recompute the *claimed* algorithm on the live file.
+            live_path = (
+                Path(current_root) / match if current_root is not None
+                else None
             )
+            actual = None
+            if live_path is not None and live_path.is_file():
+                actual = hash_file(live_path, algo)
+            if actual is not None:
+                if actual == claimed:
+                    entry["status"] = "verified"
+                    entry["notes"].append(
+                        f"claimed {algo} verified against live file"
+                    )
+                else:
+                    entry["status"] = "hash_mismatch"
+                    entry["notes"].append(
+                        f"claimed {algo} {claimed} != live {actual}"
+                    )
+            else:
+                entry["status"] = "verified"
+                summary["hash_incomparable"] += 1
+                entry["notes"].append(
+                    f"claimed {algo} hash not comparable to baseline "
+                    "sha256"
+                )
         elif claimed and not rec.sha256:
             entry["status"] = "unverifiable"
             entry["notes"].append(

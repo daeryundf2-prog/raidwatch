@@ -438,6 +438,18 @@ def cmd_harden(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_certcheck(args: argparse.Namespace) -> int:
+    from .certcheck import run_certcheck
+
+    report = run_certcheck(
+        Path(args.package).expanduser(),
+        Path(args.out).expanduser(),
+        root=Path(args.root).expanduser() if args.root else None,
+    )
+    _print(report["row_summary"])
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import run_gui
 
@@ -505,7 +517,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_diff)
 
     p = sub.add_parser("verify", help="verify a delivered seized-evidence list")
-    p.add_argument("--seized", required=True, help="seized list (json/csv/txt)")
+    p.add_argument(
+        "--seized", required=True,
+        help="seized list (json/csv/txt/pdf/xlsx — incl. the 전자정보확인서 "
+             "상세목록 엑셀 and ForensicArtifactCollector report.json)",
+    )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--baseline", help="baseline inventory.db")
     src.add_argument("--root", help="live root to inventory on the fly")
@@ -769,6 +785,24 @@ def build_parser() -> argparse.ArgumentParser:
                    "(correlates created-then-deleted signature files)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_leftovers)
+
+    p = sub.add_parser(
+        "certcheck",
+        help="audit a 전자정보확인서 package (서식1/상세목록 PDF + xlsx "
+             "detail list) for internal consistency — seq gaps, bad "
+             "hashes, duplicates, post-issuance mtimes",
+    )
+    p.add_argument(
+        "package",
+        help="certificate dir, package zip, or a bare .xlsx detail list",
+    )
+    p.add_argument(
+        "--root",
+        help="mirror/returned-PC root — also re-verify claimed sizes "
+             "and hashes against the actual files",
+    )
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_certcheck)
 
     p = sub.add_parser(
         "env",

@@ -1934,5 +1934,203 @@ class EnvTests(unittest.TestCase):
             self.assertTrue(env["capabilities"]["window_scan"])
 
 
+_XLSX_HEADERS = [
+    "연번", "파일명", "확장자명", "파일 크기(바이트)", "경로",
+    "SHA1", "생성일시", "수정일시", "접근일시",
+]
+
+
+def _write_test_xlsx(path: Path, sheets: list[list[list[str]]]) -> Path:
+    """Build a minimal .xlsx (inline strings) in the police detail-list
+    shape — enough for the stdlib reader: workbook + rels + sheets."""
+    import zipfile
+
+    def sheet_xml(rows: list[list[str]]) -> str:
+        body = []
+        for ri, row in enumerate(rows, 1):
+            cells = "".join(
+                f'<c r="{chr(ord("A") + ci)}{ri}" t="inlineStr">'
+                f'<is><t xml:space="preserve">{v}</t></is></c>'
+                for ci, v in enumerate(row)
+            )
+            body.append(f'<row r="{ri}">{cells}</row>')
+        return (
+            '<?xml version="1.0"?><worksheet '
+            'xmlns="http://schemas.openxmlformats.org/spreadsheetml/'
+            '2006/main"><sheetData>' + "".join(body) + "</sheetData>"
+            "</worksheet>"
+        )
+
+    wb = (
+        '<?xml version="1.0"?><workbook '
+        'xmlns="http://schemas.openxmlformats.org/spreadsheetml/'
+        '2006/main" xmlns:r="http://schemas.openxmlformats.org/'
+        'officeDocument/2006/relationships"><sheets>'
+        + "".join(
+            f'<sheet name="파일{i + 1}" sheetId="{i + 1}" '
+            f'r:id="rId{i + 1}"/>'
+            for i in range(len(sheets))
+        )
+        + "</sheets></workbook>"
+    )
+    rels = (
+        '<?xml version="1.0"?><Relationships '
+        'xmlns="http://schemas.openxmlformats.org/package/2006/'
+        'relationships">'
+        + "".join(
+            f'<Relationship Id="rId{i + 1}" Type="t" '
+            f'Target="worksheets/sheet{i + 1}.xml"/>'
+            for i in range(len(sheets))
+        )
+        + "</Relationships>"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as zf:
+        zf.writestr("[Content_Types].xml", '<?xml version="1.0"?><Types/>')
+        zf.writestr("xl/workbook.xml", wb)
+        zf.writestr("xl/_rels/workbook.xml.rels", rels)
+        for i, rows in enumerate(sheets):
+            zf.writestr(f"xl/worksheets/sheet{i + 1}.xml", sheet_xml(rows))
+    return path
+
+
+def _seized_row(seq, name, path, sha1="A" * 40, size="100",
+                modified="2025-01-02 10:00:00"):
+    return [
+        str(seq), name, name.rsplit(".", 1)[-1], size, path, sha1,
+        "2025-01-01 10:00:00", modified, "2025-01-03 10:00:00",
+    ]
+
+
+class XlsxSeizedListTests(unittest.TestCase):
+    def test_parse_police_detail_list_xlsx(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            x = _write_test_xlsx(Path(td) / "list.xlsx", [[
+                _XLSX_HEADERS,
+                _seized_row(1, "계약서.pdf", "C:\\docs\\계약서.pdf"),
+                _seized_row(2, "notes.txt", "C:\\docs\\notes.txt",
+                            sha1="B" * 40),
+            ], [
+                _XLSX_HEADERS,
+                _seized_row(3, "more.hwp", "C:\\docs\\more.hwp",
+                            sha1="C" * 40),
+            ]])
+            items = parse_seized_list(x)
+            self.assertEqual(len(items), 3)
+            self.assertEqual(items[0]["rel"], "docs/계약서.pdf")
+            self.assertEqual(items[0]["sha256"], "a" * 40)
+            self.assertEqual(items[0]["hash_algo"], "sha1")
+            self.assertEqual(items[0]["claimed_meta"]["seq"], "1")
+            self.assertEqual(items[2]["claimed_meta"]["sheet"], "파일2")
+
+    def test_sha1_claim_verified_on_live_disk(self) -> None:
+        import hashlib
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "pc"
+            _write(root / "docs" / "a.txt", b"seized bytes")
+            _write(root / "docs" / "b.txt", b"other bytes")
+            good = hashlib.sha1(b"seized bytes").hexdigest()
+            x = _write_test_xlsx(Path(td) / "list.xlsx", [[
+                _XLSX_HEADERS,
+                _seized_row(1, "a.txt", "C:\\docs\\a.txt", sha1=good),
+                _seized_row(2, "b.txt", "C:\\docs\\b.txt",
+                            sha1="0" * 40),
+            ]])
+            inv = Inventory(Path(td) / "inv.db", create=True)
+            build_inventory(root, inv)
+            rep = verify_items(
+                parse_seized_list(x), inv, current_root=root)
+            inv.close()
+            a, b = rep["items"]
+            self.assertEqual(a["status"], "verified")
+            self.assertIn("sha1 verified", "; ".join(a["notes"]))
+            self.assertEqual(b["status"], "hash_mismatch")
+            self.assertEqual(rep["summary"]["hash_incomparable"], 0)
+
+    def test_collector_report_json_ingested(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rep = Path(td) / "report.json"
+            rep.write_text(json.dumps({
+                "scan_config": {"start_time": "2026-07-28T13:00:00"},
+                "likely_seized_files": [
+                    "C:\\Users\\pc\\Desktop\\전자정보목록.pdf",
+                    "C:\\Users\\pc\\Desktop\\선별결과.zip",
+                ],
+            }), encoding="utf-8")
+            items = parse_seized_list(rep)
+            self.assertEqual(len(items), 2)
+            self.assertEqual(
+                items[0]["rel"], "Users/pc/Desktop/전자정보목록.pdf")
+
+    def test_json_object_without_list_key_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            rep = Path(td) / "weird.json"
+            rep.write_text(json.dumps({"stats": {"total": 3}}),
+                           encoding="utf-8")
+            items = parse_seized_list(rep)
+            self.assertEqual(len(items), 1)
+            self.assertTrue(items[0]["unparsed"])
+
+
+class CertcheckTests(unittest.TestCase):
+    def test_certcheck_flags_defects(self) -> None:
+        from raidwatch.certcheck import run_certcheck
+
+        with tempfile.TemporaryDirectory() as td:
+            pkg = Path(td) / "pkg"
+            rows = [
+                _XLSX_HEADERS,
+                _seized_row(1, "a.pdf", "C:\\d\\a.pdf"),
+                _seized_row(2, "b.pdf", "C:\\d\\b.pdf"),
+                # seq gap: no row 3
+                _seized_row(4, "c.pdf", "C:\\d\\c.pdf",
+                            sha1="A" * 40),  # dup of row 1's hash
+                _seized_row(5, "WRONG.pdf", "C:\\d\\real.pdf"),
+                _seized_row(6, "bad.pdf", "C:\\d\\bad.pdf",
+                            sha1="NOT-HEX"),
+                _seized_row(7, "late.pdf", "C:\\d\\late.pdf",
+                            modified="2026-06-01 09:00:00"),
+            ]
+            _write_test_xlsx(pkg / "엑셀_20260101120000.xlsx", [rows])
+            _write(
+                pkg / "전자정보확인서_20260101120000_서식1.pdf",
+                b"%PDF-1.4 empty",
+            )
+            rep = run_certcheck(pkg, Path(td) / "out")
+            checks = {f["check"] for f in rep["findings"]}
+            self.assertIn("seq_integrity", checks)
+            self.assertIn("hash_format", checks)
+            self.assertIn("name_path_mismatch", checks)
+            self.assertIn("duplicate_sha1", checks)
+            self.assertIn("post_cert_mtime", checks)
+            self.assertEqual(
+                rep["certificate_ts"], "2026-01-01T12:00:00")
+            self.assertEqual(rep["row_summary"]["rows"], 6)
+
+    def test_certcheck_live_reverify(self) -> None:
+        import hashlib
+
+        from raidwatch.certcheck import run_certcheck
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "mirror"
+            data = b"claimed bytes"
+            _write(root / "d" / "a.pdf", data)
+            sha1 = hashlib.sha1(data).hexdigest()
+            pkg = Path(td) / "pkg"
+            _write_test_xlsx(pkg / "list.xlsx", [[
+                _XLSX_HEADERS,
+                _seized_row(1, "a.pdf", "C:\\d\\a.pdf", sha1=sha1,
+                            size=str(len(data))),
+                _seized_row(2, "gone.pdf", "C:\\d\\gone.pdf"),
+            ]])
+            rep = run_certcheck(pkg, Path(td) / "out", root=root)
+            live = rep["live_reverify"]
+            self.assertEqual(live["resolved"], 1)
+            self.assertEqual(live["hash_verified"], 1)
+            self.assertEqual(live["missing"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

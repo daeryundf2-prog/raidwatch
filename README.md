@@ -13,7 +13,7 @@
 | 사전 (raid 이전) | `baseline`, `watch`, `harden` | 기준선 인벤토리+해시, 변경 감시, OS 감사 기록 활성화 |
 | 집행 중 | `watch` (사전 설치 시) | 수사 도구 행위의 수동적 관찰 기록 |
 | 사후 | `scan`, `diff`, `verify`, `sources`, `artifacts`, `carve`, `journal` | 독립 재현, 전후 비교, 목록 검증, 원본 회수, 행위 재구성 |
-| 사후 (분석) | `boundary`, `keyword-audit`, `containers`, `mirror` | 관할 위반·노이즈율·컨테이너 해시·맞복사 |
+| 사후 (분석) | `boundary`, `keyword-audit`, `containers`, `mirror`, `certcheck` | 관할 위반·노이즈율·컨테이너 해시·맞복사·확인서 감사 |
 | 배포/수거 | `bundle`, `field`, `collect` | 키트 생성 → 의뢰인 PC 실행 → 산출물만 회수 |
 | 사무실 | `gui`, `package`, `petition`, `inquiry` | Tkinter 프런트엔드, 검토 패키지, 인쇄 서면, 조사실 확인기 |
 
@@ -33,7 +33,8 @@ python -m raidwatch diff \
 # 3. 영장 조건으로 독립 재현 스캔
 python -m raidwatch scan /path --profile warrant-profile.json --out case/<case_id>/scan
 
-# 4. 수사기관이 교부한 선별 목록 검증 (json/csv/txt/pdf)
+# 4. 수사기관이 교부한 선별 목록 검증 (json/csv/txt/pdf/xlsx)
+#    xlsx는 전자정보확인서 상세목록 엑셀(연번/파일명/경로/SHA1…)을 직접 읽음
 #    pdf는 텍스트 레이어 자동 추출 — 스캔 PDF는 키트의 OCR-LIST.ps1로 텍스트화
 python -m raidwatch verify \
   --seized seized-list.txt \
@@ -149,6 +150,14 @@ python -m raidwatch leftovers --root C:\ --since "2026-09-19 14:30" \
 #     도구 → 기능별 capability 맵 (field는 항상 이걸 먼저 실행)
 python -m raidwatch env --out case/<case_id>/env
 
+# 23. 확인서 자체를 감사 — 수사기관이 교부한 전자정보확인서 패키지
+#     (서식1/상세목록 PDF + 상세목록 xlsx + 시스템정보)의 내부 모순 탐지:
+#     연번 누락·중복, 무효 해시, 파일명↔경로 불일치, 중복 기재,
+#     발급시각 이후 수정일시(불가능한 상태), 인쇄 목록↔엑셀 대조
+python -m raidwatch certcheck 전자정보확인서_패키지.zip \
+  --out case/<case_id>/certcheck
+#   --root E:\Seized_Mirror 추가 시 실물 파일과 크기·해시 재검증
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -190,6 +199,7 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 먼저 컴퓨터가 뭘 할 수 있는지 묻는다 | `env` | OS 빌드·권한·파일시스템·도구 프로브 → capability 맵으로 각 기능 자동 적응 (구형/제한 환경 대응) |
 | 받는 쪽도 설치가 필요 없다 | `JOIN.bat` | 조각+SUMS+JOIN.bat를 한 폴더에 → 더블클릭 하나로 복원·조각별 검증·봉인 해시 대조·성공/실패 팝업 (Windows 기본 기능만 사용) |
 | 받은 조각을 봉인 해시로 검증한다 | `join` | 분할 파츠 재결합 → custody.txt의 현장 해시와 대조 → 손상 파츠 지목 |
+| 상대방의 확인서를 감사한다 | `certcheck` | 교부 엑셀의 연번·해시·중복·시각 모순 → 목록 자체의 신빙성 탄핵 |
 
 ## 검증 시 두 가지 역발상
 
