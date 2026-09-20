@@ -1569,6 +1569,26 @@ class BoundaryTests(unittest.TestCase):
         self.assertFalse(
             classify_path(r"C:\Users\u\a.docx")["violation"])
 
+    def test_cloud_marker_needs_own_segment(self) -> None:
+        # substring false-positives from the real 엑셀 detail list:
+        # X*box*GamingOverlay and 네이버*리뷰링크* are local files
+        from raidwatch.boundary import classify_path
+
+        self.assertFalse(
+            classify_path(
+                r"C:\데스크 피의자 PC\문서 파일"
+                r"\XboxGamingOverlayTraces_FT_Server_20260611.txt"
+            )["violation"])
+        self.assertFalse(
+            classify_path(
+                r"C:\데스크 피의자 PC\문서 파일\네이버리뷰링크.docx"
+            )["violation"])
+        # real cloud segments still fire — incl. 'OneDrive - 회사' style
+        self.assertTrue(
+            classify_path(r"C:\Users\u\OneDrive - 회사\f.docx")[
+                "violation"])
+        self.assertTrue(classify_path(r"D:\box\export.zip")["violation"])
+
     def test_run_boundary_counts(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             seized = Path(td) / "seized.txt"

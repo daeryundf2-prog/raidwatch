@@ -165,6 +165,13 @@ def _parse_text_lines(text: str) -> list[dict]:
         line = line.strip()
         if not line or line.startswith("#"):
             continue
+        if "|" in line:
+            # ranked exports: ' 10 | 근거 | C:\\path' — '|' is illegal
+            # in Windows filenames, so it's always a delimiter here
+            parts = [p.strip() for p in line.split("|") if p.strip()]
+            tail = parts[-1] if parts else ""
+            if re.search(r"[A-Za-z]:|/|\\", tail):
+                line = tail
         digest = None
         algo = "sha256"
         parts = line.split(None, 1)

@@ -329,7 +329,7 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M1 | 기준선: 파일 열거 + 해시 + SQLite 인벤토리 + 매니페스트 | ✅ `raidwatch baseline` |
 | M2 | 프로필 기반 독립 스캔(속성 선별) + hit 목록 + 영장 해석별 분류 | ✅ `raidwatch scan` |
 | M3 | 사후 diff: 기준선 vs 재인벤토리 비교 + 변경점 분류 리포트 | ✅ `raidwatch diff` (열람 `accessed` 분류 + 백데이팅 식재 탐지) |
-| M4 | 수사기관 목록 파싱 + 해시 대조 + out_of_scope 추출 + 검증 리포트 | ✅ `raidwatch verify` (OCR 손상 경로 퍼지 매칭 포함) |
+| M4 | 수사기관 목록 파싱 + 해시 대조 + out_of_scope 추출 + 검증 리포트 | ✅ `raidwatch verify` — json/csv/txt/pdf + **전자정보확인서 상세목록 .xlsx**(연번/파일명/경로/SHA1 다중시트, stdlib 파서) + 수집기 report.json(`likely_seized_files`); 주장 sha1/md5는 `--current-root`에서 실물 재계산 검증 (OCR 손상 경로 퍼지 매칭 포함) |
 | M4a | 원본 목록 회수: 스풀/Temp/휴지통 수집 + 문자열 추출 | ✅ `raidwatch sources` |
 | M4b | 수사관 행위 재구성: prefetch 정밀 파싱/evtx 청크 해제+레코드 타임라인/regf 하이브 구조 파싱(ShimCache·USBSTOR·UserAssist·AmCache)/lnk 파서/VSS 감지 | ✅ `raidwatch artifacts` |
 | M4c | 삭제 파일 카빙: $MFT 덤프 파싱 + resident 데이터 복구 + $SI/$FN 타임스톰프 불일치 탐지 | ✅ `raidwatch carve` (비-resident/미할당 클러스터는 미구현) |
@@ -359,6 +359,7 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M27 | 날짜만으로 집행일 행위 수집 | ✅ `raidwatch window --root --since` — 창 안 생성(btime/ctime)·수정(mtime)·열람(atime, accessed_only) 파일 전수, 메타데이터만(해시 없음), 스캔·히트 상한+truncated 기록. field는 since 있고 baseline 없을 때 자동 실행. NTFS atime 비활성 한계 명시 |
 | M28 | 클릭 입력 대화상자 | ✅ 키트 내장 `KIT-INPUT.ps1` — WinForms DateTimePicker 달력+OpenFileDialog+인주 체크박스+"모두 건너뛰기" → `inputs\answers.txt`; 프리필 부족분만 표시, WinForms 불가 시 콘솔 폴백 |
 | M29 | 결과물 분할 전송 | ✅ field: 결과 zip 2GiB 초과 시 20MiB(지메일 첨부 단위) 분할 → `raidwatch-results-parts/`(.001…+파트별 해시+`JOIN.bat`/`join.sh` 원클릭 복원+안내서), 원본 zip은 분할 후 삭제(whole-zip 해시는 custody에 보존), RUN.bat DEST 반송 시 파츠 폴더도 업로드 |
+| M30 | 확인서 자체 감사 | ✅ `raidwatch certcheck` — 확인서 패키지(dir/zip/xlsx) 내부 모순 탐지: 연번 누락·중복·비단조, 무효 해시(hex/길이), 파일명↔경로 basename 불일치, 동일 해시·경로 중복 기재, 확인서 발급시각 이후 mtime(불가능 상태), 인쇄 상세목록 PDF 해시 개수↔xlsx 행 대조, 중첩 zip 1단계 재귀, `--root`로 실물 크기·주장알고리즘 해시 재검증 |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.
@@ -371,10 +372,12 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
   시작할지 — M3/M4가 사후만으로도 동작하므로 순서 조정 가능
 - watcher의 오프사이트 로그 미러: 합법성(본인 기기/동의)과 현장
   네트워크 가용성 의존 — 옵션으로 둘지 제외할지
-- 수사기관 목록 입력 형식: txt/csv/json 직접 파싱, 텍스트 레이어 있는
-  PDF는 내장 추출기로 처리, 스캔 PDF/이미지는 키트 내장
-  `OCR-LIST.ps1`(Windows WinRT OCR, 설치 불필요 — 한글 언어팩 필요)로
-  텍스트화 후 검증. OCR 결과물의 경로 손상은 퍼지 매칭이 흡수.
+- 수사기관 목록 입력 형식: txt/csv/json + 전자정보확인서 상세목록
+  xlsx(한글 헤더·다중시트) 직접 파싱, 수집기 report.json의
+  `likely_seized_files`도 인식. 텍스트 레이어 있는 PDF는 내장 추출기로
+  처리, 스캔 PDF/이미지는 키트 내장 `OCR-LIST.ps1`(Windows WinRT OCR,
+  설치 불필요 — 한글 언어팩 필요)로 텍스트화 후 검증. OCR 결과물의
+  경로 손상은 퍼지 매칭이 흡수.
 - 도구 이름 (작업명 후보: `rapidwatch`, `raid-response`, `verify-seizure`)
 - 영장 해석 엔진을 어느 수준까지 자동화할지(키워드 포함관계 추론은
   법률 판단과 인접 — 보조 표시 수준으로 제한할지)

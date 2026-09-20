@@ -31,9 +31,25 @@ from .common import utc_now_iso, write_json, write_manifest
 
 _CLOUD_MARKERS = (
     "onedrive", "google drive", "내 드라이브", "googledrivefs",
-    "dropbox", "icloud", "iclouddrive", "box\\", "box/",
+    "dropbox", "icloud", "iclouddrive", "box",
     "mybox", "네이버", "naverworks", "nextcloud", "mega",
 )
+
+
+def _cloud_hit(low: str) -> str | None:
+    """Marker must own a whole path segment (or a segment prefix with a
+    space/hyphen boundary, e.g. 'OneDrive - 회사') — a bare substring
+    match fires on 'XboxGamingOverlay' via 'box', which is noise."""
+    for seg in re.split(r"[\\/]+", low):
+        for marker in _CLOUD_MARKERS:
+            if (
+                seg == marker
+                or seg.startswith(marker + " ")
+                or seg.startswith(marker + "-")
+                or seg.startswith(marker + "_")
+            ):
+                return marker
+    return None
 
 _DRIVE_TYPES = {2: "removable", 3: "fixed", 4: "remote"}
 
@@ -61,10 +77,10 @@ def classify_path(path: str) -> dict:
     if p.startswith("\\\\") or p.startswith("//"):
         return {"territory": "remote_unc", "violation": True,
                 "reason": "UNC network share — outside local media"}
-    for marker in _CLOUD_MARKERS:
-        if marker.rstrip("\\/") in low:
-            return {"territory": "cloud_sync", "violation": True,
-                    "reason": f"cloud-sync location ({marker.strip('\\\\/')})"}
+    marker = _cloud_hit(low)
+    if marker:
+        return {"territory": "cloud_sync", "violation": True,
+                "reason": f"cloud-sync location ({marker})"}
     m = re.match(r"([A-Za-z]):", p)
     if m:
         dtype = _drive_type(m.group(1) + ":")
