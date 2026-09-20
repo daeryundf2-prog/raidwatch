@@ -21,6 +21,7 @@ from .profile import evaluate
 
 _HEX_RE = re.compile(r"^[0-9a-fA-F]{32,128}$")
 _PATH_KEYS = (
+    "claimed_path", "claimed path",  # convert.py output — beats bare "name"
     "path", "file", "filepath", "file_path", "filename", "name",
     "경로", "파일경로", "파일 경로", "전체 파일 경로", "파일명",
 )

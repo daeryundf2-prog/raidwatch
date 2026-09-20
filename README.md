@@ -158,6 +158,14 @@ python -m raidwatch certcheck 전자정보확인서_패키지.zip \
   --out case/<case_id>/certcheck
 #   --root E:\Seized_Mirror 추가 시 실물 파일과 크기·해시 재검증
 
+# 24. 수집 산출물 정규화 — ForensicArtifactCollector의 scan_* 폴더/
+#     ForensicOutput zip/report.json/엑셀/txt 목록 → 단일 seized.csv
+#     (Excel에서 바로 열림, verify/boundary 입력으로 재사용 가능)
+#     scan_* 폴더가 여러 개면 의미 우선순위로 선택: report.json의
+#     likely_seized_files > ranked > ... > file_paths.txt(전체 덤프)
+python -m raidwatch convert 치료실1컴퓨터ForensicOutput.zip \
+  --out case/<case_id>/seized-list
+
 # 감시 모드 (폴링 스냅샷 + 프로세스 모니터링,
 #   Ctrl+C 종료 시 watcher_stopped 기록)
 python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
@@ -200,6 +208,7 @@ python -m raidwatch watch /path --out case/<case_id>/watch --interval 5
 | 받는 쪽도 설치가 필요 없다 | `JOIN.bat` | 조각+SUMS+JOIN.bat를 한 폴더에 → 더블클릭 하나로 복원·조각별 검증·봉인 해시 대조·성공/실패 팝업 (Windows 기본 기능만 사용) |
 | 받은 조각을 봉인 해시로 검증한다 | `join` | 분할 파츠 재결합 → custody.txt의 현장 해시와 대조 → 손상 파츠 지목 |
 | 상대방의 확인서를 감사한다 | `certcheck` | 교부 엑셀의 연번·해시·중복·시각 모순 → 목록 자체의 신빙성 탄핵 |
+| 산출물 포맷을 하나로 통일한다 | `convert` | collector zip/report.json/엑셀/txt → Excel용 seized.csv (verify 재사용 가능) |
 
 ## 검증 시 두 가지 역발상
 

@@ -450,6 +450,17 @@ def cmd_certcheck(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_convert(args: argparse.Namespace) -> int:
+    from .convert import run_convert
+
+    report = run_convert(
+        Path(args.source).expanduser(),
+        Path(args.out).expanduser(),
+    )
+    _print(report)
+    return 0
+
+
 def cmd_gui(args: argparse.Namespace) -> int:
     from .gui import run_gui
 
@@ -803,6 +814,21 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_certcheck)
+
+    p = sub.add_parser(
+        "convert",
+        help="normalize a collector output (scan dir, ForensicOutput "
+             "zip, report.json, 엑셀 detail list, txt list) into one "
+             "canonical seized.csv — Excel-openable and re-usable as "
+             "input to verify/boundary/keyword-audit",
+    )
+    p.add_argument(
+        "source",
+        help="collector scan dir, ForensicOutput zip, or a seized-list "
+             "file (xlsx/csv/json/txt/pdf)",
+    )
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=cmd_convert)
 
     p = sub.add_parser(
         "env",

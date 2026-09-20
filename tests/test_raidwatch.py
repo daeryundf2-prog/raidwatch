@@ -2212,5 +2212,66 @@ class CertcheckTests(unittest.TestCase):
             self.assertEqual(live["missing"], 1)
 
 
+class ConvertTests(unittest.TestCase):
+    def test_convert_prefers_report_json_over_path_dump(self) -> None:
+        """file_paths.txt lists EVERY discovered path (11 > 10 rows)
+        but report.json's likely_seized_files is the real estimate —
+        convert must pick by meaning, not row count."""
+        import json
+
+        from raidwatch.convert import run_convert
+
+        with tempfile.TemporaryDirectory() as td:
+            scan = Path(td) / "ForensicOutput" / "scan_20260914_202349"
+            _write(
+                scan / "file_paths.txt",
+                ("# 추출된 파일/경로 목록\n"
+                 + "\n".join(f"C:\\all\\f{i}.dat" for i in range(11))
+                 ).encode("utf-8"),
+            )
+            _write(
+                scan / "report.json",
+                json.dumps({
+                    "stats": {"likely_seized": 2},
+                    "likely_seized_files": ["C:\\d\\a.pdf", "C:\\d\\b.pdf"],
+                }).encode("utf-8"),
+            )
+            rep = run_convert(Path(td), Path(td) / "out")
+            self.assertTrue(rep["source_used"].endswith("report.json"))
+            self.assertEqual(rep["rows"], 2)
+
+    def test_convert_newest_scan_dir_wins(self) -> None:
+        import json
+
+        from raidwatch.convert import run_convert
+
+        with tempfile.TemporaryDirectory() as td:
+            for day, path in (
+                ("20260908_165149", "C:\\old\\a.pdf"),
+                ("20260914_202349", "C:\\new\\b.pdf"),
+            ):
+                scan = Path(td) / "ForensicOutput" / f"scan_{day}"
+                _write(
+                    scan / "report.json",
+                    json.dumps({"likely_seized_files": [path]}).encode("utf-8"),
+                )
+            rep = run_convert(Path(td), Path(td) / "out")
+            self.assertIn("scan_20260914", rep["source_used"])
+
+    def test_convert_csv_roundtrips_through_verify(self) -> None:
+        from raidwatch.convert import run_convert
+        from raidwatch.verify import parse_seized_list
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "list.txt"
+            _write(src, "C:\\docs\\a.pdf\nC:\\docs\\b.pdf\n".encode("utf-8"))
+            rep = run_convert(src, Path(td) / "out")
+            self.assertEqual(rep["rows"], 2)
+            items = parse_seized_list(Path(td) / "out" / "seized.csv")
+            self.assertEqual(len(items), 2)
+            self.assertFalse(any(i.get("unparsed") for i in items))
+            self.assertEqual(items[0]["rel"], "docs/a.pdf")
+
+
 if __name__ == "__main__":
     unittest.main()

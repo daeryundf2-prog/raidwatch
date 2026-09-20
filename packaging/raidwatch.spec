@@ -12,7 +12,10 @@ a = Analysis(
     [os.path.join(_HERE, "raidwatch-entry.py")],
     pathex=[_ROOT],
     binaries=[],
-    datas=[],
+    # Ship the package SOURCE too — `raidwatch bundle` run inside the
+    # frozen exe re-stages it into the kit's .pyz fallback; in onefile
+    # mode the importable package lives in the PYZ, not as files.
+    datas=[(os.path.join(_ROOT, "raidwatch"), "raidwatch_src")],
     # gui.py imports tkinter lazily inside a try — force the bundling
     # hook so the office-side GUI works inside the exe.
     hiddenimports=["tkinter"],

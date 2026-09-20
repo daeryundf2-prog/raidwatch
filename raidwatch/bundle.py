@@ -19,6 +19,7 @@ fallback.
 from __future__ import annotations
 
 import shutil
+import sys
 import zipapp
 from pathlib import Path
 
@@ -230,7 +231,7 @@ $dtp.Width = 200
 $dtp.Location = New-Object System.Drawing.Point(16, 36)
 $form.Controls.Add($dtp)
 
-Add-Label "압수 목록 파일 (선택사항 — txt/csv/json/pdf/사진)" 74
+Add-Label "압수 목록 파일 (선택사항 — xlsx/txt/csv/json/pdf/사진)" 74
 $txtFile = New-Object System.Windows.Forms.TextBox
 $txtFile.ReadOnly = $true
 $txtFile.Width = 300
@@ -242,7 +243,7 @@ $btnFile.Width = 100
 $btnFile.Location = New-Object System.Drawing.Point(324, 96)
 $ofd = New-Object System.Windows.Forms.OpenFileDialog
 $ofd.Title = "압수 목록 파일 선택"
-$ofd.Filter = "압수 목록|*.txt;*.csv;*.json;*.pdf;*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff|모든 파일|*.*"
+$ofd.Filter = "압수 목록|*.xlsx;*.txt;*.csv;*.json;*.pdf;*.jpg;*.jpeg;*.png;*.bmp;*.tif;*.tiff|모든 파일|*.*"
 $btnFile.Add_Click({
     if ($ofd.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
         $txtFile.Text = $ofd.FileName
@@ -538,8 +539,8 @@ _README = """raidwatch field kit — 압수수색 대응 분석 키트
   1. 압수수색 집행 일시  — 달력에서 날짜를 클릭해서 고릅니다.
      모르면 체크를 해제하면 됩니다.
   2. 압수 목록 파일     — "파일 선택..." 버튼으로 고릅니다.
-     txt/csv/json은 바로 검증되고, PDF는 텍스트가 살아있으면 자동
-     처리, 스캔/사진은 Windows 내장 OCR로 자동 읽기를 시도합니다.
+     xlsx/txt/csv/json은 바로 검증되고, PDF는 텍스트가 살아있으면
+     자동 처리, 스캔/사진은 Windows 내장 OCR로 자동 읽기를 시도합니다.
   3. 인주 도장 체크    — 빨간 도장이 글자를 가리면 체크합니다.
   4. 사건번호/메모     — 모르면 비워둡니다.
   ※ 대화상자가 안 뜨는 환경에서는 검은 창에 직접 입력하게 됩니다
@@ -614,18 +615,27 @@ def build_bundle(
     falls back to the .pyz + a Python interpreter on the target.
     """
     out_dir = Path(out_dir).resolve()
-    package_src = Path(__file__).resolve().parent
+    if getattr(sys, "frozen", False):
+        # Inside a PyInstaller onefile exe the importable package is in
+        # the PYZ archive, not on disk — the spec ships the source tree
+        # as _MEIPASS/raidwatch_src for exactly this re-staging.
+        package_src = Path(sys._MEIPASS) / "raidwatch_src"
+    else:
+        package_src = Path(__file__).resolve().parent
     inputs_dir = out_dir / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
 
     stage = out_dir / "_stage_pyz"
-    try:
-        _stage_pyz_source(stage, package_src)
-        zipapp.create_archive(
-            stage, out_dir / PYZ_NAME, interpreter="/usr/bin/env python3"
-        )
-    finally:
-        shutil.rmtree(stage, ignore_errors=True)
+    pyz_built = False
+    if package_src.is_dir():
+        try:
+            _stage_pyz_source(stage, package_src)
+            zipapp.create_archive(
+                stage, out_dir / PYZ_NAME, interpreter="/usr/bin/env python3"
+            )
+            pyz_built = True
+        finally:
+            shutil.rmtree(stage, ignore_errors=True)
 
     exe_name = None
     if exe is not None:
@@ -679,8 +689,15 @@ def build_bundle(
         out_dir,
         "bundle",
         {
-            "pyz": PYZ_NAME,
-            "pyz_sha256": sha256_file(out_dir / PYZ_NAME),
+            "pyz": PYZ_NAME if pyz_built else None,
+            "pyz_sha256": (
+                sha256_file(out_dir / PYZ_NAME) if pyz_built else None
+            ),
+            "pyz_note": (
+                None if pyz_built
+                else "package source unavailable in this runtime — "
+                     "kit relies on the bundled exe"
+            ),
             "exe": exe_name,
             "exe_sha256": (
                 sha256_file(out_dir / exe_name) if exe_name else None
@@ -696,7 +713,7 @@ def build_bundle(
     )
     return {
         "kit_dir": str(out_dir),
-        "pyz": str(out_dir / PYZ_NAME),
+        "pyz": str(out_dir / PYZ_NAME) if pyz_built else None,
         "exe": str(out_dir / exe_name) if exe_name else None,
         "inputs": placed,
         "manifest": str(manifest),
