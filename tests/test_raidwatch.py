@@ -5,6 +5,7 @@ import os
 import struct
 import tempfile
 import unittest
+import unittest.mock
 from datetime import datetime
 from pathlib import Path
 
@@ -488,6 +489,106 @@ class CliTests(unittest.TestCase):
             report = json.loads((diff_out / "diff.json").read_text(encoding="utf-8"))
             self.assertEqual(report["summary"]["content_changed"], 1)
             self.assertTrue((diff_out / "report.md").exists())
+
+    def test_missing_inputs_fail_closed_at_parse_time(self) -> None:
+        """A nonexistent root/seized list must abort (exit 2), never emit
+        an all-zero 'successful' report — fail-open validation would let a
+        typo produce an apparently-clean scan."""
+        with tempfile.TemporaryDirectory() as td:
+            missing = str(Path(td) / "no-such-path")
+            out = str(Path(td) / "out")
+            profile = _write(
+                Path(td) / "profile.json",
+                json.dumps(RaidwatchFixture.profile_dict()).encode(),
+            )
+            seized = _write(Path(td) / "seized.csv", b"claimed_path\nx\n")
+            bad_argvs = [
+                ["baseline", missing, "--out", out],
+                ["scan", missing, "--profile", str(profile), "--out", out],
+                ["verify", "--seized", missing, "--baseline", "x.db",
+                 "--out", out],
+                ["verify", "--seized", str(seized), "--root", missing,
+                 "--out", out],
+                ["verify", "--seized", str(seized), "--root", str(td),
+                 "--current-root", missing, "--out", out],
+                ["window", "--root", missing, "--since", "2026-01-01",
+                 "--out", out],
+                ["keyword-audit", "--seized", str(seized),
+                 "--profile", str(profile), "--root", missing, "--out", out],
+                ["mirror", "--root", missing, "--seized", str(seized),
+                 "--out", out],
+                ["diff", "--baseline", missing, "--current", "x.db",
+                 "--out", out],
+                ["certcheck", missing, "--out", out],
+                ["convert", missing, "--out", out],
+                ["join", missing],
+                ["inquiry", "--case", missing],
+            ]
+            for argv in bad_argvs:
+                with self.subTest(argv=argv):
+                    with self.assertRaises(SystemExit) as cm:
+                        cli_main(argv)
+                    self.assertEqual(cm.exception.code, 2, argv)
+
+    def test_file_path_rejected_where_dir_required(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            afile = _write(Path(td) / "afile.txt", b"x")
+            with self.assertRaises(SystemExit) as cm:
+                cli_main(["baseline", str(afile), "--out",
+                          str(Path(td) / "out")])
+            self.assertEqual(cm.exception.code, 2)
+
+    def test_empty_valid_dir_still_scans_clean(self) -> None:
+        """The fix must not overcorrect: a genuinely empty directory is a
+        legitimate target and returns rc 0 with zero entries."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "empty"
+            root.mkdir()
+            out = Path(td) / "case" / "baseline"
+            rc = cli_main(["baseline", str(root), "--out", str(out)])
+            self.assertEqual(rc, 0)
+            report = json.loads(
+                (out / "manifest.json").read_text(encoding="utf-8"))
+            self.assertEqual(report["summary"]["counts"]["file"], 0)
+
+    def test_iter_fs_unreadable_root_yields_error_not_empty(self) -> None:
+        """An existing-but-unopenable root must surface as an error entry
+        in the inventory, not a silently-empty scan."""
+        from raidwatch.inventory import iter_fs
+        with unittest.mock.patch(
+            "raidwatch.inventory.os.scandir",
+            side_effect=PermissionError("denied"),
+        ):
+            rows = list(iter_fs(Path("/definitely-unreadable-root")))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0], ".")
+        self.assertEqual(rows[0][3], "error")
+
+    def test_unexpected_error_is_one_line_not_traceback(self) -> None:
+        """Field users get 'raidwatch: error: …' + rc 1; RAIDWATCH_DEBUG=1
+        still gives developers the full traceback."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "root"
+            root.mkdir()
+            with unittest.mock.patch("raidwatch.cli.Inventory"), \
+                    unittest.mock.patch(
+                        "raidwatch.cli.build_inventory",
+                        side_effect=RuntimeError("boom")):
+                rc = cli_main(["baseline", str(root), "--out",
+                               str(Path(td) / "o")])
+            self.assertEqual(rc, 1)
+
+            os.environ["RAIDWATCH_DEBUG"] = "1"
+            try:
+                with unittest.mock.patch("raidwatch.cli.Inventory"), \
+                        unittest.mock.patch(
+                            "raidwatch.cli.build_inventory",
+                            side_effect=RuntimeError("boom")), \
+                        self.assertRaises(RuntimeError):
+                    cli_main(["baseline", str(root), "--out",
+                              str(Path(td) / "o2")])
+            finally:
+                del os.environ["RAIDWATCH_DEBUG"]
 
 
 class TextExtractTests(unittest.TestCase):

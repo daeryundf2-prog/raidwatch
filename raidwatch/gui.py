@@ -73,17 +73,27 @@ def run_gui() -> int:
 
         threading.Thread(target=_t, daemon=True).start()
 
+    def _root_or_warn() -> Path | None:
+        root = Path(root_var.get()).expanduser()
+        if not root.is_dir():
+            say(f"[error] not an existing directory: {root}")
+            return None
+        return root
+
     def do_baseline():
         from .db import Inventory
         from .inventory import build_inventory
+
+        root = _root_or_warn()
+        if root is None:
+            return
 
         def _run():
             out = Path(out_var.get())
             out.mkdir(parents=True, exist_ok=True)
             inv = Inventory(out / "baseline.db", create=True)
             try:
-                return build_inventory(
-                    Path(root_var.get()), inv, hash_files=True)
+                return build_inventory(root, inv, hash_files=True)
             finally:
                 inv.close()
 
@@ -92,10 +102,13 @@ def run_gui() -> int:
     def do_field():
         from .field import run_field
 
+        root = _root_or_warn()
+        if root is None:
+            return
         work(
             "field",
             lambda: run_field(
-                Path(root_var.get()),
+                root,
                 Path("inputs"),
                 Path(out_var.get()),
                 use_vss=vss_var.get(),

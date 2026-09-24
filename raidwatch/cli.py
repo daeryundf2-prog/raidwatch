@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -36,6 +37,26 @@ from .watcher import run_watch
 
 def _print(payload: dict) -> None:
     print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+
+
+def _dir_arg(value: str) -> Path:
+    """Argparse type for args that must be an existing directory.
+
+    Fails closed: a missing root must abort the run, never produce an
+    all-zero "successful" scan of nothing.
+    """
+    p = Path(value).expanduser()
+    if not p.is_dir():
+        raise argparse.ArgumentTypeError(f"not an existing directory: {value}")
+    return p
+
+
+def _path_arg(value: str) -> Path:
+    """Argparse type for args that must be an existing file or directory."""
+    p = Path(value).expanduser()
+    if not p.exists():
+        raise argparse.ArgumentTypeError(f"no such file or directory: {value}")
+    return p
 
 
 def _build_temp_inventory(root: Path, hash_files: bool = True) -> tuple[Inventory, tempfile.TemporaryDirectory]:
@@ -505,39 +526,43 @@ def build_parser() -> argparse.ArgumentParser:
         )
 
     p = sub.add_parser("baseline", help="build a baseline inventory DB")
-    p.add_argument("root")
+    p.add_argument("root", type=_dir_arg)
     p.add_argument("--out", required=True)
     p.add_argument("--verbose", action="store_true")
     common_scan_opts(p)
     p.set_defaults(func=cmd_baseline)
 
     p = sub.add_parser("scan", help="independent warrant-criteria rescan")
-    p.add_argument("root")
-    p.add_argument("--profile", required=True)
+    p.add_argument("root", type=_dir_arg)
+    p.add_argument("--profile", required=True, type=_path_arg)
     p.add_argument("--out", required=True)
     common_scan_opts(p)
     p.set_defaults(func=cmd_scan)
 
     p = sub.add_parser("diff", help="baseline vs current comparison")
-    p.add_argument("--baseline", required=True, help="baseline inventory.db")
+    p.add_argument("--baseline", required=True, type=_path_arg,
+                   help="baseline inventory.db")
     grp = p.add_mutually_exclusive_group(required=True)
-    grp.add_argument("--rescan", help="live root to re-inventory")
-    grp.add_argument("--current", help="existing inventory.db")
+    grp.add_argument("--rescan", type=_dir_arg, help="live root to re-inventory")
+    grp.add_argument("--current", type=_path_arg, help="existing inventory.db")
     p.add_argument("--out", required=True)
     p.add_argument("--no-hash", action="store_true")
     p.set_defaults(func=cmd_diff)
 
     p = sub.add_parser("verify", help="verify a delivered seized-evidence list")
     p.add_argument(
-        "--seized", required=True,
+        "--seized", required=True, type=_path_arg,
         help="seized list (json/csv/txt/pdf/xlsx — incl. the 전자정보확인서 "
              "상세목록 엑셀 and ForensicArtifactCollector report.json)",
     )
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--baseline", help="baseline inventory.db")
-    src.add_argument("--root", help="live root to inventory on the fly")
-    p.add_argument("--profile", help="warrant profile JSON for scope verdicts")
-    p.add_argument("--current-root", help="re-hash files on current disk")
+    src.add_argument("--baseline", type=_path_arg, help="baseline inventory.db")
+    src.add_argument("--root", type=_dir_arg,
+                     help="live root to inventory on the fly")
+    p.add_argument("--profile", type=_path_arg,
+                   help="warrant profile JSON for scope verdicts")
+    p.add_argument("--current-root", type=_dir_arg,
+                   help="re-hash files on current disk")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_verify)
 
@@ -545,7 +570,7 @@ def build_parser() -> argparse.ArgumentParser:
         "sources",
         help="recover original seized-list sources (printer spool/temp/recycle bin)",
     )
-    p.add_argument("root")
+    p.add_argument("root", type=_dir_arg)
     p.add_argument("--out", required=True)
     p.add_argument("--since", help="only collect files modified after this ISO date/time")
     p.add_argument("--max-file-mb", type=int, default=50)
@@ -555,7 +580,7 @@ def build_parser() -> argparse.ArgumentParser:
         "artifacts",
         help="reconstruct investigator activity (prefetch/recent/evtx/hives/VSS)",
     )
-    p.add_argument("root")
+    p.add_argument("root", type=_dir_arg)
     p.add_argument("--out", required=True)
     p.add_argument("--since", help="only include items modified after this ISO date/time")
     p.add_argument("--max-file-mb", type=int, default=200)
@@ -568,7 +593,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_artifacts)
 
     p = sub.add_parser("watch", help="snapshot-polling change monitor")
-    p.add_argument("root")
+    p.add_argument("root", type=_dir_arg)
     p.add_argument("--out", required=True)
     p.add_argument("--interval", type=float, default=5.0)
     p.add_argument("--once", action="store_true", help="single pass then exit")
@@ -579,7 +604,8 @@ def build_parser() -> argparse.ArgumentParser:
         "carve",
         help="parse an $MFT dump: deleted entries + resident-data recovery",
     )
-    p.add_argument("--mft", required=True, help="path to an $MFT byte dump")
+    p.add_argument("--mft", required=True, type=_path_arg,
+                   help="path to an $MFT byte dump")
     p.add_argument("--out", required=True)
     p.add_argument(
         "--no-recover", action="store_true",
@@ -593,7 +619,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--volume", help="e.g. C: — runs fsutil (Windows, elevated)")
-    src.add_argument("--csv", help="previously exported USN journal CSV")
+    src.add_argument("--csv", type=_path_arg,
+                     help="previously exported USN journal CSV")
     p.add_argument("--out", required=True)
     p.add_argument("--since", help="only events after this ISO date/time")
     p.add_argument("--filter", help="substring filter on file names")
@@ -603,7 +630,8 @@ def build_parser() -> argparse.ArgumentParser:
         "package",
         help="assemble the legal-review bundle (disposal list + timeline)",
     )
-    p.add_argument("--case", required=True, help="case dir holding raidwatch outputs")
+    p.add_argument("--case", required=True, type=_dir_arg,
+                   help="case dir holding raidwatch outputs")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_package)
 
@@ -612,11 +640,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="build a self-contained field kit (raidwatch.pyz + inputs + RUN scripts)",
     )
     p.add_argument("--out", required=True, help="kit output directory")
-    p.add_argument("--profile", help="warrant profile JSON to embed")
-    p.add_argument("--seized", help="seized list to embed")
-    p.add_argument("--baseline", help="baseline inventory.db to embed")
+    p.add_argument("--profile", type=_path_arg,
+                   help="warrant profile JSON to embed")
+    p.add_argument("--seized", type=_path_arg, help="seized list to embed")
+    p.add_argument("--baseline", type=_path_arg,
+                   help="baseline inventory.db to embed")
     p.add_argument(
         "--exe",
+        type=_path_arg,
         help="PyInstaller-built raidwatch binary for the TARGET platform "
              "(dist/raidwatch.exe) — makes the kit runnable without Python",
     )
@@ -641,8 +672,10 @@ def build_parser() -> argparse.ArgumentParser:
         "field",
         help="run the kit pipeline locally (what RUN.bat/RUN.sh invoke)",
     )
-    p.add_argument("--root", required=True, help="analysis root on this machine")
-    p.add_argument("--inputs", required=True, help="kit inputs dir (may be empty)")
+    p.add_argument("--root", required=True, type=_dir_arg,
+                   help="analysis root on this machine")
+    p.add_argument("--inputs", required=True, type=_dir_arg,
+                   help="kit inputs dir (may be empty)")
     p.add_argument("--out", required=True, help="output dir for raidwatch-out")
     p.add_argument(
         "--since",
@@ -669,10 +702,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="copy the exact seized file set (what investigators took) "
              "to an external drive, preserving structure + hashing",
     )
-    p.add_argument("--root", required=True, help="filesystem root to copy from")
+    p.add_argument("--root", required=True, type=_dir_arg,
+                   help="filesystem root to copy from")
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--verify", help="verify.json with resolved matches")
-    src.add_argument("--seized", help="raw seized list — resolved on the fly")
+    src.add_argument("--verify", type=_path_arg,
+                     help="verify.json with resolved matches")
+    src.add_argument("--seized", type=_path_arg,
+                     help="raw seized list — resolved on the fly")
     p.add_argument("--out", required=True, help="destination (external SSD)")
     p.add_argument("--max-file-mb", type=int, default=0,
                    help="per-file cap; 0 = unlimited (default)")
@@ -682,7 +718,8 @@ def build_parser() -> argparse.ArgumentParser:
         "petition",
         help="print-ready 환부·폐기 청구서 HTML from case outputs",
     )
-    p.add_argument("--case", required=True, help="case dir holding raidwatch outputs")
+    p.add_argument("--case", required=True, type=_dir_arg,
+                   help="case dir holding raidwatch outputs")
     p.add_argument("--out", required=True)
     p.add_argument("--case-no", help="사건번호")
     p.add_argument("--suspect", help="피압수자 성명")
@@ -695,7 +732,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="extract BitLocker recovery keys + volume map before power-off "
              "(Windows; admin for key protectors)",
     )
-    p.add_argument("--root", help="unused — volumes are auto-detected")
+    p.add_argument("--root", type=_dir_arg,
+                   help="unused — volumes are auto-detected")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_lockbox)
 
@@ -705,7 +743,7 @@ def build_parser() -> argparse.ArgumentParser:
             help="preserve PC-resident mobile data (KakaoTalk DB, "
                  "iTunes/SmartSwitch backups, desktop messenger state)",
         )
-        p.add_argument("root")
+        p.add_argument("root", type=_dir_arg)
         p.add_argument("--out", required=True)
         p.add_argument("--max-file-mb", type=int, default=2048)
         p.set_defaults(func=cmd_mobile)
@@ -716,8 +754,8 @@ def build_parser() -> argparse.ArgumentParser:
              "paths in the seized list (형소법 §215③)",
     )
     src = p.add_mutually_exclusive_group(required=True)
-    src.add_argument("--seized", help="raw seized list")
-    src.add_argument("--verify", help="verify.json")
+    src.add_argument("--seized", type=_path_arg, help="raw seized list")
+    src.add_argument("--verify", type=_path_arg, help="verify.json")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_boundary)
 
@@ -729,7 +767,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", required=True)
     p.add_argument("--since", help="only files modified after this ISO date/time")
     p.add_argument(
-        "--scan", action="append", default=[],
+        "--scan", action="append", default=[], type=_dir_arg,
         help="extra directory to scan (repeatable)",
     )
     p.add_argument(
@@ -744,9 +782,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="per-keyword noise ratio: how much of what was seized "
              "fails the warrant's own criteria",
     )
-    p.add_argument("--seized", required=True, help="seized list")
-    p.add_argument("--profile", required=True, help="warrant profile JSON")
-    p.add_argument("--root", required=True, help="filesystem root")
+    p.add_argument("--seized", required=True, type=_path_arg, help="seized list")
+    p.add_argument("--profile", required=True, type=_path_arg,
+                   help="warrant profile JSON")
+    p.add_argument("--root", required=True, type=_dir_arg, help="filesystem root")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_keyword_audit)
 
@@ -755,7 +794,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="interrogation-room checker: type a filename, get the "
              "scope verdict in one second",
     )
-    p.add_argument("--case", required=True, help="case dir with verify/diff outputs")
+    p.add_argument("--case", required=True, type=_dir_arg,
+                   help="case dir with verify/diff outputs")
     p.add_argument("--out")
     p.add_argument("--query", "-q", help="single lookup, non-interactive")
     p.set_defaults(func=cmd_inquiry)
@@ -765,7 +805,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="raid-window activity: every file created/modified/"
              "accessed since a date — works with NO seized list",
     )
-    p.add_argument("--root", required=True, help="filesystem root to scan")
+    p.add_argument("--root", required=True, type=_dir_arg,
+                   help="filesystem root to scan")
     p.add_argument(
         "--since", required=True,
         help="seizure date/time, e.g. '2026-09-19 14:30' or ISO",
@@ -779,7 +820,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="reassemble emailed raidwatch-results-parts into the "
              "results zip and verify it against the sealed hash",
     )
-    p.add_argument("parts", help="folder containing the .001 .002 … parts")
+    p.add_argument("parts", type=_dir_arg,
+                   help="folder containing the .001 .002 … parts")
     p.add_argument("--out", help="output zip path (default: inside parts dir)")
     p.set_defaults(func=cmd_join)
 
@@ -789,10 +831,11 @@ def build_parser() -> argparse.ArgumentParser:
              "machine — their list PDF / export archive, recycle-bin "
              "entries, journal-logged deletions",
     )
-    p.add_argument("--root", required=True)
+    p.add_argument("--root", required=True, type=_dir_arg)
     p.add_argument("--since", help="raid start (e.g. 2026-09-19 14:30)")
     p.add_argument("--until", help="window end (default: now)")
-    p.add_argument("--journal", help="journal.json from the same run "
+    p.add_argument("--journal", type=_path_arg,
+                   help="journal.json from the same run "
                    "(correlates created-then-deleted signature files)")
     p.add_argument("--out", required=True)
     p.set_defaults(func=cmd_leftovers)
@@ -804,11 +847,11 @@ def build_parser() -> argparse.ArgumentParser:
              "hashes, duplicates, post-issuance mtimes",
     )
     p.add_argument(
-        "package",
+        "package", type=_path_arg,
         help="certificate dir, package zip, or a bare .xlsx detail list",
     )
     p.add_argument(
-        "--root",
+        "--root", type=_dir_arg,
         help="mirror/returned-PC root — also re-verify claimed sizes "
              "and hashes against the actual files",
     )
@@ -823,7 +866,7 @@ def build_parser() -> argparse.ArgumentParser:
              "input to verify/boundary/keyword-audit",
     )
     p.add_argument(
-        "source",
+        "source", type=_path_arg,
         help="collector scan dir, ForensicOutput zip, or a seized-list "
              "file (xlsx/csv/json/txt/pdf)",
     )
@@ -846,7 +889,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="deploy a kit to a remote machine over SSH and pull results back",
     )
     p.add_argument("--host", required=True, help="user@host (key-based ssh auth)")
-    p.add_argument("--kit", required=True, help="local kit dir built by `bundle`")
+    p.add_argument("--kit", required=True, type=_dir_arg,
+                   help="local kit dir built by `bundle`")
     p.add_argument("--out", required=True, help="local dir for downloaded results")
     p.add_argument("--remote-dir", default="raidwatch-kit")
     p.add_argument("--remote-root", help="analysis root on the remote machine")
@@ -865,7 +909,20 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError, OSError):
             pass
     args = build_parser().parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except KeyboardInterrupt:
+        print("raidwatch: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        # Field users get one actionable line, not a traceback; developers
+        # can still get the full trace via RAIDWATCH_DEBUG=1.
+        if os.environ.get("RAIDWATCH_DEBUG"):
+            raise
+        print(f"raidwatch: error: {exc}", file=sys.stderr)
+        print("raidwatch: set RAIDWATCH_DEBUG=1 and re-run for a traceback",
+              file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

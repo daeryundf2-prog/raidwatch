@@ -13,15 +13,22 @@ ProgressFn = Callable[[int, str], None]
 
 
 def iter_fs(root: Path, *, follow_symlinks: bool = False) -> Iterator[tuple[str, Path, os.stat_result, str]]:
-    """Yield (rel_posix, abs_path, stat_result, kind) in deterministic order."""
-    stack = [Path(root)]
+    """Yield (rel_posix, abs_path, stat_result, kind) in deterministic order.
+
+    An unreadable descendant directory is skipped (recorded nowhere), but a
+    root that cannot be opened at all yields a "." error entry — an empty
+    result set is only legitimate for a genuinely empty directory.
+    """
+    stack = [(Path(root), True)]
     seen_inodes: set[int] = set()
     while stack:
-        current = stack.pop()
+        current, is_root = stack.pop()
         try:
             with os.scandir(current) as it:
                 entries = sorted(it, key=lambda e: e.name)
         except OSError:
+            if is_root:
+                yield ".", Path(root), None, "error"
             continue
         dirs = []
         for entry in entries:
@@ -49,7 +56,7 @@ def iter_fs(root: Path, *, follow_symlinks: bool = False) -> Iterator[tuple[str,
                 yield rel, abs_path, st, "file"
             else:
                 yield rel, abs_path, st, "other"
-        stack.extend(reversed(dirs))
+        stack.extend((d, False) for d in reversed(dirs))
 
 
 def record_for(

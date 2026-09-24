@@ -361,6 +361,7 @@ PC에 남아 있을 가능성이 높다. 종이를 OCR하기 전에 원본을 �
 | M29 | 결과물 분할 전송 | ✅ field: 결과 zip 2GiB 초과 시 20MiB(지메일 첨부 단위) 분할 → `raidwatch-results-parts/`(.001…+파트별 해시+`JOIN.bat`/`join.sh` 원클릭 복원+안내서), 원본 zip은 분할 후 삭제(whole-zip 해시는 custody에 보존), RUN.bat DEST 반송 시 파츠 폴더도 업로드 |
 | M30 | 확인서 자체 감사 | ✅ `raidwatch certcheck` — 확인서 패키지(dir/zip/xlsx) 내부 모순 탐지: 연번 누락·중복·비단조, 무효 해시(hex/길이), 파일명↔경로 basename 불일치, 동일 해시·경로 중복 기재, 확인서 발급시각 이후 mtime(불가능 상태), 인쇄 상세목록 PDF 해시 개수↔xlsx 행 대조, 중첩 zip 1단계 재귀, `--root`로 실물 크기·주장알고리즘 해시 재검증 |
 | M31 | 산출물 포맷 통일 변환기 | ✅ `raidwatch convert` — collector 산출물(scan_*/ForensicOutput zip/report.json/likely_seized_files/selected_files/ranked/file_paths/엑셀) → 정규화 `seized.csv`(UTF-8 BOM, Excel 바로 열림, verify/boundary/mirror 입력 재사용). 의미 우선순위(likely_seized > selected > report.json > 전체덤프 file_paths) + 동명 소스는 최신 scan 우선. `claimed_path` 우선 매핑으로 CSV 왕복 재파싱 unparsed 0 보장, 변환 매니페스트(명령·소스·행수) 기록 |
+| M32 | fail-closed 입력 검증 | ✅ 모든 경로 인자(루트/입력 파일/케이스 디렉터리)를 argparse 타입으로 즉시 검증 — 존재하지 않는 루트가 "전부 0인 정상 리포트"를 내지 않음(종료 2). `iter_fs`는 열리지 않는 루트를 `.` error 엔트리로 기록(빈 디렉터리와 구분). 예상 못한 예외는 `raidwatch: error: …` 한 줄+종료 1, `RAIDWATCH_DEBUG=1` 시 traceback. GUI도 동일 검증. push/PR마다 3-OS unittest CI(`test.yml`) |
 
 구현: `raidwatch/` 패키지 (Python, `python -m raidwatch`), 테스트
 `tests/test_raidwatch.py`. 기존 `rapidtriage` 코어와 분리된 독립 모듈.
