@@ -732,6 +732,60 @@ class GuiSmokeTests(unittest.TestCase):
             self.assertEqual(log.count("baseline done"), n_done)
 
 
+class JunctionLoopTests(unittest.TestCase):
+    """NTFS junctions are NOT symlinks — DirEntry.is_symlink() misses
+    them and they even report st_ino=0, so a junction pointing at an
+    ancestor looped every full-drive walk forever (found field-testing
+    a real C:\\ investigation: the stock
+    'AppData\\Local\\Application Data' junction hangs baseline/window/
+    sources/artifacts). Walkers must dedup dirs by resolved path."""
+
+    def _junction(self, link: Path, target: Path) -> None:
+        if os.name != "nt":
+            self.skipTest("junctions are NTFS-only")
+        import subprocess
+        r = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            capture_output=True)
+        if r.returncode != 0:
+            self.skipTest(f"mklink /J unavailable: {r.stderr!r}")
+
+    def test_junction_loop_terminates_and_dedups(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "root"
+            sub = root / "sub"
+            sub.mkdir(parents=True)
+            _write(sub / "f.txt", b"x")
+            self._junction(sub / "loop", root)
+
+            from raidwatch.inventory import iter_fs
+            rels = [r[0] for r in iter_fs(root)]
+            self.assertIn("sub/loop", rels)      # junction itself recorded
+            self.assertNotIn("sub/loop/loop", rels)   # but never re-entered
+            self.assertNotIn("sub/loop/sub", rels)
+
+            from raidwatch.window import scan_window
+            rep = scan_window(root, Path(td) / "w", since_ns=0)
+            self.assertFalse(rep["summary"]["truncated"])
+            paths = [h["path"] for h in rep["files"]]
+            # the physical file is counted once — not once per alias
+            self.assertEqual(paths.count("sub/f.txt"), 1)
+            self.assertFalse(any("loop/f.txt" in p for p in paths))
+
+    def test_leftovers_junction_loop_terminates(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td) / "root"
+            sub = root / "sub"
+            sub.mkdir(parents=True)
+            _write(sub / "seized-list.pdf", b"%PDF x")
+            self._junction(sub / "loop", root)
+            from raidwatch.leftover import run_leftovers
+            rep = run_leftovers([root], Path(td) / "out")
+            self.assertTrue(rep)  # returns; no hang
+            copied = rep.get("files_copied", rep.get("hits", []))
+            self.assertLessEqual(len(copied), 1)  # no duplicate aliases
+
+
 class TextExtractTests(unittest.TestCase):
     def test_plain_text_cp949(self) -> None:
         with tempfile.TemporaryDirectory() as td:

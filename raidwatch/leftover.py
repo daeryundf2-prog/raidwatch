@@ -261,10 +261,12 @@ def run_leftovers(
     out_resolved = out_dir.resolve()
     hits: list[dict] = []
     scanned = 0
+    seen_dirs: set[Path] = set()
     for root in roots:
         root = Path(root)
         if not root.is_dir():
             continue
+        seen_dirs.add(root.resolve())
         stack = [root]
         stop = False
         while stack and not stop:
@@ -280,10 +282,17 @@ def run_leftovers(
                     break
                 try:
                     if p.is_dir():
+                        # Dedup by resolved path — junctions report
+                        # st_ino=0 and is_symlink() misses them, but
+                        # resolve() maps every reparse to its target.
+                        rp = p.resolve()
+                        if rp in seen_dirs:
+                            continue
+                        seen_dirs.add(rp)
                         if p.name not in (
                             "$Recycle.Bin", "System Volume Information",
                             "proc", "sys", "dev",
-                        ) and not p.resolve().is_relative_to(out_resolved):
+                        ) and not rp.is_relative_to(out_resolved):
                             stack.append(p)
                         continue
                     st = p.stat()

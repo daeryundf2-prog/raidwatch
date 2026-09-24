@@ -31,7 +31,9 @@ import os
 import time
 from pathlib import Path
 
-from .common import ns_to_iso, utc_now_iso, write_json, write_manifest
+from .common import (
+    ns_to_iso, safe_walk, utc_now_iso, write_json, write_manifest,
+)
 
 _MAX_SCANNED = 500_000  # dir entries walked — bounded runtime
 _MAX_HITS = 100_000     # recorded window hits
@@ -69,8 +71,9 @@ def scan_window(
     errors = 0
     truncated = False
     t0 = time.monotonic()
-
-    for dirpath, _dirs, files in os.walk(root, onerror=lambda e: None):
+    for dirpath, _dirs, files in safe_walk(root, onerror=lambda e: None):
+        if truncated:
+            break
         for name in files:
             scanned += 1
             if scanned > max_scanned or len(hits) >= max_hits:

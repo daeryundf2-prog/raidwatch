@@ -20,7 +20,9 @@ import json
 import shutil
 from pathlib import Path
 
-from .common import sha256_file, utc_now_iso, write_json, write_manifest
+from .common import (
+    iter_tree, sha256_file, utc_now_iso, write_json, write_manifest,
+)
 
 KNOWN_OUTPUTS = (
     "verify.json", "diff.json", "hits.json", "artifacts.json",
@@ -124,7 +126,10 @@ def _write_disposal_list(verify: dict | None, diff: dict | None, dest: Path) -> 
 def _write_procedure_log(case_dir: Path, dest: Path) -> int:
     """Chronological response log from manifests + watcher events."""
     events: list[tuple[str, str]] = []
-    for manifest in sorted(case_dir.rglob("manifest.json")):
+    manifests = sorted(
+        p for p in iter_tree(case_dir) if p.name == "manifest.json"
+    )
+    for manifest in manifests:
         data = _load_json(manifest) or {}
         events.append(
             (
@@ -187,7 +192,9 @@ def _write_checklist(
     ads = (artifacts or {}).get("alternate_data_streams", {})
     via_shadow = (artifacts or {}).get("summary", {}).get("via_shadow", 0)
     seized_manifest = None
-    for m in sorted(case_dir.rglob("manifest.json")):
+    for m in sorted(
+        p for p in iter_tree(case_dir) if p.name == "manifest.json"
+    ):
         data = _load_json(m) or {}
         if data.get("command") == "verify":
             seized_manifest = data
@@ -246,7 +253,8 @@ def build_package(case_dir: Path, out_dir: Path) -> dict:
     files_dir = out_dir / "files"
     index = []
     for name in KNOWN_OUTPUTS:
-        for src in sorted(case_dir.rglob(name)):
+        for src in sorted(p for p in iter_tree(case_dir)
+                          if p.name == name):
             rel = src.relative_to(case_dir).as_posix()
             dest = files_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)

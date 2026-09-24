@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import __version__
+
 TOOL_NAME = "raidwatch"
-TOOL_VERSION = "0.9.2"
+TOOL_VERSION = __version__
 _CHUNK = 1024 * 1024
 _FILETIME_EPOCH_NS = 116444736000000000  # 1601-01-01 in 100ns units *100
 
@@ -162,3 +165,32 @@ def write_manifest(out_dir: Path, command: str, extra: dict) -> Path:
         **extra,
     }
     return write_json(out_dir / "manifest.json", payload)
+
+
+def safe_walk(root, *, onerror=None):
+    """os.walk() hardened against NTFS junction / mount-point loops.
+
+    os.walk does not treat junctions as links (DirEntry.is_symlink()
+    misses them, and junctions even report st_ino=0), so a reparse
+    point back into an ancestor would loop forever. Deduping on the
+    *resolved* path catches every reparse kind portably — a junction
+    resolves to its target, whose realpath is already in the set.
+
+    Yields (dirpath, dirnames, filenames) like os.walk; directories
+    already visited via another alias are pruned in place.
+    """
+    seen: set[str] = set()
+    for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
+        key = os.path.realpath(dirpath)
+        if key in seen:
+            dirnames[:] = []
+            continue
+        seen.add(key)
+        yield dirpath, dirnames, filenames
+
+
+def iter_tree(root):
+    """Yield every file Path under root — junction-loop safe."""
+    for dirpath, _dirs, files in safe_walk(root):
+        for name in files:
+            yield Path(dirpath) / name

@@ -20,7 +20,10 @@ def iter_fs(root: Path, *, follow_symlinks: bool = False) -> Iterator[tuple[str,
     result set is only legitimate for a genuinely empty directory.
     """
     stack = [(Path(root), True)]
-    seen_inodes: set[int] = set()
+    # Dedup by real path — junctions report st_ino=0 and is_symlink()
+    # misses them, but realpath() resolves every reparse kind to the
+    # true target, so any link back into the walked tree is caught.
+    seen_dirs: set[str] = {os.path.realpath(str(root))}
     while stack:
         current, is_root = stack.pop()
         try:
@@ -44,12 +47,14 @@ def iter_fs(root: Path, *, follow_symlinks: bool = False) -> Iterator[tuple[str,
             if is_link and not (follow_symlinks and is_dir):
                 yield rel, abs_path, st, "symlink"
             elif is_dir:
-                # Cycle guard for symlinked dirs (junction loops, etc.)
-                if is_link and st.st_ino in seen_inodes:
-                    yield rel, abs_path, st, "symlink"
+                # Cycle guard — a symlink/junction pointing back into
+                # the walked tree is recorded once but never re-entered.
+                key = os.path.realpath(entry.path)
+                if key in seen_dirs:
+                    yield (rel, abs_path, st,
+                           "symlink" if is_link else "dir")
                     continue
-                if is_link:
-                    seen_inodes.add(st.st_ino)
+                seen_dirs.add(key)
                 yield rel, abs_path, st, "dir"
                 dirs.append(abs_path)
             elif entry.is_file(follow_symlinks=follow_symlinks):

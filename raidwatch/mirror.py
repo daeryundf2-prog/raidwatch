@@ -24,7 +24,9 @@ import os
 import shutil
 from pathlib import Path
 
-from .common import sha256_file, utc_now_iso, write_json, write_manifest
+from .common import (
+    safe_walk, sha256_file, utc_now_iso, write_json, write_manifest,
+)
 
 SUMS_NAME = "MIRROR-SHA256SUMS.txt"
 
@@ -54,7 +56,7 @@ def _scoped_candidates(root: Path, rel: str) -> list[str]:
     if cur == root:
         return []  # even the top dir is unreadable — no useful scope
     found: list[str] = []
-    for dirpath, _dirs, files in os.walk(cur):
+    for dirpath, _dirs, files in safe_walk(cur):
         for name in files:
             p = Path(dirpath) / name
             try:

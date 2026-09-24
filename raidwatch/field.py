@@ -28,7 +28,9 @@ from pathlib import Path
 from .artifacts import collect_artifacts
 from .audit import run_keyword_audit
 from .boundary import run_boundary
-from .common import sha256_file, utc_now_iso, write_json, write_manifest
+from .common import (
+    iter_tree, sha256_file, utc_now_iso, write_json, write_manifest,
+)
 from .containers import sniff_containers
 from .leftover import run_leftovers
 from .window import scan_window
@@ -561,8 +563,8 @@ def run_field(
     archive_path = out_dir / RESULTS_ZIP
     sums = []
     produced = sorted(
-        p for p in steps_dir.rglob("*")
-        if p.is_file() and p.name != "_field_inventory.db"
+        p for p in iter_tree(steps_dir)
+        if p.name != "_field_inventory.db"
     )
     with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for p in produced:

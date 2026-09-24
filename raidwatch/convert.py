@@ -22,7 +22,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from .common import utc_now_iso, write_json, write_manifest
+from .common import iter_tree, utc_now_iso, write_json, write_manifest
 from .verify import parse_seized_list
 
 # Collector scan dirs carry several overlapping lists with DIFFERENT
@@ -54,13 +54,13 @@ def _candidates(root: Path) -> list[Path]:
     for name in _SOURCE_PRIORITY:
         found.extend(
             sorted(
-                (p for p in root.rglob(name) if p.is_file()),
+                (p for p in iter_tree(root) if p.name == name),
                 reverse=True,
             )
         )
     if not found:
         found.extend(
-            p for p in sorted(root.rglob("*"))
+            p for p in sorted(iter_tree(root))
             if p.suffix.lower() in (".xlsx", ".csv", ".json", ".txt")
         )
     return found

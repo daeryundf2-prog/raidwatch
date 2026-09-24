@@ -35,7 +35,8 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from .common import (
-    hash_file, sha256_file, utc_now_iso, write_json, write_manifest,
+    hash_file, iter_tree, sha256_file, utc_now_iso, write_json,
+    write_manifest,
 )
 from .xlsx_read import iter_seized_rows
 
@@ -55,7 +56,7 @@ def _members(package: Path) -> list[tuple[str, "bytes | Path"]]:
     if package.is_dir():
         return sorted(
             (str(p.relative_to(package)).replace("\\", "/"), p)
-            for p in package.rglob("*") if p.is_file()
+            for p in iter_tree(package)
         )
     if package.suffix.lower() in (".xlsx", ".pdf", ".csv", ".txt"):
         # a bare detail list / certificate — itself a member, not a

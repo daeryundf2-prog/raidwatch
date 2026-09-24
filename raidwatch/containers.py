@@ -80,6 +80,9 @@ def _scan_root(root: Path, out: list, seen: set, since_ns: int | None,
     locked down)."""
     stack = [(root, 0)]
     visited = 0
+    # Junction/mount-point loops: is_symlink() misses junctions and
+    # they report st_ino=0 — dedup by resolved path instead.
+    seen_dirs: set[Path] = {root.resolve()}
     while stack and visited < _MAX_ENTRIES:
         d, depth = stack.pop()
         if depth > depth_cap:
@@ -92,6 +95,10 @@ def _scan_root(root: Path, out: list, seen: set, since_ns: int | None,
         for p in entries:
             try:
                 if p.is_dir() and not p.is_symlink():
+                    rp = p.resolve()
+                    if rp in seen_dirs:
+                        continue
+                    seen_dirs.add(rp)
                     stack.append((p, depth + 1))
                 elif p.suffix.lower() in CONTAINER_EXTS:
                     key = str(p)
