@@ -2296,6 +2296,59 @@ class LeftoversTests(unittest.TestCase):
                 b"recovered bytes",
             )
 
+    def test_leftovers_substring_hints_do_not_flag_system_files(self) -> None:
+        """Real C:\\ run flooded hits: 'deselectedTab'→select, 'gpresult'
+        →result, 'DevDispItemProvider'→item, 'DXToolsReporting'→report.
+        Hints now need a left word boundary — system noise stays out,
+        'selected_files.txt'/'forensic-report.pdf' still match."""
+        from raidwatch.common import iso_to_ns
+        from raidwatch.leftover import run_leftovers
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td) / "C"
+            sys32 = base / "Windows" / "System32"
+            sys32.mkdir(parents=True)
+            noise = (
+                "deselectedTab_1x1.gif", "DevDispItemProvider.dll",
+                "dirlist.dll", "DXToolsReporting.dll", "gpresult.exe",
+                "ExtExport.exe",
+                "Microsoft.WindowsErrorReporting.PowerShell.dll",
+            )
+            for n in noise:
+                (sys32 / n).write_bytes(b"MZ system")
+            desk = base / "Users" / "pc" / "Desktop"
+            desk.mkdir(parents=True)
+            for n in ("selected_files.txt", "forensic-report.pdf",
+                      "압수물목록.xlsx"):
+                (desk / n).write_bytes(b"x")
+
+            rep = run_leftovers(
+                [base], Path(td) / "out",
+                since_ns=iso_to_ns("2026-09-01"),
+                until_ns=iso_to_ns("2026-12-31"),
+            )
+            paths = {h["path"] for h in rep["live_files"]}
+            self.assertFalse(
+                any("System32" in p for p in paths),
+                f"system files leaked into hits: {paths}",
+            )
+            hit_names = {Path(p).name for p in paths}
+            for n in ("selected_files.txt", "forensic-report.pdf",
+                      "압수물목록.xlsx"):
+                self.assertIn(n, hit_names)
+
+    def test_leftovers_unbounded_skips_possible_list(self) -> None:
+        """Without a raid window a bare .pdf/.txt is meaningless —
+        'possible_list' must not fire unbounded."""
+        from raidwatch.leftover import run_leftovers
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td) / "C"
+            base.mkdir()
+            (base / "any_document.pdf").write_bytes(b"%PDF x")
+            rep = run_leftovers([base], Path(td) / "out")
+            self.assertEqual(rep["live_files"], [])
+
 
 class EnvTests(unittest.TestCase):
     def test_probe_environment(self) -> None:

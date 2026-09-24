@@ -29,6 +29,7 @@ list"; the printed list may live only on their laptop.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import struct
 from pathlib import Path
@@ -47,15 +48,31 @@ NAME_HINTS = (
     "수사", "증거", "list", "seiz", "evid", "forens", "output", "report",
     "result", "export", "extract", "select", "item",
 )
+# Substring matching flooded real-drive scans with system files
+# ('deselectedTab.gif'→select, 'DevDispItemProvider'→item, 'gpresult'→
+# result, 'DXToolsReporting'→report). ASCII hints therefore require a
+# left word boundary — 'selected_files.txt' still matches, the noise
+# does not. Korean hints stay plain substrings.
+_ASCII_HINT_RE = re.compile(
+    r"(?<![a-z0-9])(" + "|".join(
+        re.escape(h) for h in NAME_HINTS if h.isascii()) + r")"
+)
+_KO_HINTS = tuple(h for h in NAME_HINTS if not h.isascii())
+
+
+def _name_hinted(low: str) -> bool:
+    return bool(_ASCII_HINT_RE.search(low)) or any(
+        h in low for h in _KO_HINTS)
+
 
 _SCAN_CAP = 500_000
 _HIT_CAP = 50_000
 
 
-def _classify(name: str, ext: str) -> str | None:
+def _classify(name: str, ext: str, *, bounded: bool = True) -> str | None:
     """Return a hit category, or None."""
     low = name.lower()
-    hinted = any(h in low for h in NAME_HINTS)
+    hinted = _name_hinted(low)
     if ext in CONTAINER_EXTS:
         return "container_named" if hinted else "container_in_window"
     if ext in LIST_EXTS and hinted:
@@ -63,7 +80,9 @@ def _classify(name: str, ext: str) -> str | None:
     if hinted:
         return "name_match"
     if ext in LIST_EXTS:
-        return "possible_list"  # new pdf/xlsx in the raid window — weak
+        # A bare .pdf/.xlsx only means something INSIDE a raid window;
+        # unbounded it is every document on the drive.
+        return "possible_list" if bounded else None
     return None
 
 
@@ -137,7 +156,7 @@ def _parse_info2(
             continue
         orig = f"{drive}{name}" if ":" in drive else name
         ext = Path(orig).suffix.lower()
-        hinted = any(h in orig.lower() for h in NAME_HINTS)
+        hinted = _name_hinted(orig.lower())
         # XP stores the deleted content as D<drv><idx><ext> beside INFO2
         d_file = bin_dir / f"D{drive[0].lower()}{index}{ext}"
         hits.append({
@@ -187,8 +206,7 @@ def _scan_recycle_bin(
                         if not (since_s <= deleted <= until_s):
                             continue
                         ext = Path(orig_name).suffix.lower()
-                        hinted = any(
-                            h in orig_name.lower() for h in NAME_HINTS)
+                        hinted = _name_hinted(orig_name.lower())
                         r_file = sid / ("$R" + e.name[2:])
                         hits.append({
                             "category": (
@@ -231,8 +249,8 @@ def _journal_deletions(
             continue
         name = str(ev.get("file_name") or "")
         ext = Path(name).suffix.lower()
-        if ext in LIST_EXTS | CONTAINER_EXTS or any(
-            h in name.lower() for h in NAME_HINTS
+        if ext in LIST_EXTS | CONTAINER_EXTS or _name_hinted(
+            name.lower()
         ):
             out.append({
                 "category": "deleted_in_window",
@@ -259,6 +277,7 @@ def run_leftovers(
     until_s = until_ns / 1e9 if until_ns else float("inf")
 
     out_resolved = out_dir.resolve()
+    bounded = since_ns is not None or until_ns is not None
     hits: list[dict] = []
     scanned = 0
     seen_dirs: set[Path] = set()
@@ -303,7 +322,8 @@ def run_leftovers(
                 modified = since_s <= st.st_mtime <= until_s
                 if not (created or modified):
                     continue
-                cat = _classify(p.name, p.suffix.lower())
+                cat = _classify(
+                    p.name, p.suffix.lower(), bounded=bounded)
                 if cat is None:
                     continue
                 dest = files_dir / p.name
@@ -391,6 +411,10 @@ def run_leftovers(
             "window — candidate for carve recovery. Empty results "
             "prove nothing: the team may have written only to their "
             "own media."
+            + ("" if bounded else
+               " No --since/--until was given, so weak 'possible_list' "
+               "matches (bare .pdf/.xlsx anywhere on disk) were "
+               "disabled — pass the raid window to enable them.")
         ),
     }
     write_json(out_dir / "leftovers.json", report)
