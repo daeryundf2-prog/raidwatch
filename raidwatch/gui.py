@@ -127,7 +127,7 @@ def run_gui() -> int:
         work(
             "bundle",
             lambda: build_bundle(
-                Path(kit), exe_path=Path(exe) if exe else None),
+                Path(kit), exe=Path(exe) if exe else None),
         )
 
     vss_var = tk.BooleanVar(value=True)

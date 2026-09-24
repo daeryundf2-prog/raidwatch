@@ -591,6 +591,147 @@ class CliTests(unittest.TestCase):
                 del os.environ["RAIDWATCH_DEBUG"]
 
 
+class GuiSmokeTests(unittest.TestCase):
+    """Drive the office GUI's widget tree directly: every button must
+    exist, be invocable, and produce its artifact. Catches signature
+    drift between the GUI and the library (the Build-kit button once
+    passed a dead kwarg and silently failed for users)."""
+
+    def _launch(self, td: str):
+        import tkinter as tk
+        from tkinter import filedialog, messagebox
+
+        import raidwatch.gui as gui
+
+        work = Path(td)
+        target = work / "target"
+        (target / "docs").mkdir(parents=True)
+        (target / "docs" / "notes.txt").write_text("smoke")
+        out_dir = work / "out"
+        kit_dir = work / "kit"
+
+        class SyncThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                self._t = target
+
+            def start(self):
+                if self._t:
+                    self._t()
+
+        dlg = {"dir": str(target)}
+        patches = [
+            unittest.mock.patch("threading.Thread", SyncThread),
+            unittest.mock.patch.object(tk.Tk, "mainloop", lambda s: None),
+            unittest.mock.patch.object(
+                filedialog, "askdirectory",
+                lambda **kw: dlg["dir"]),
+            unittest.mock.patch.object(
+                filedialog, "asksaveasfilename",
+                lambda **kw: str(kit_dir)),
+            unittest.mock.patch.object(
+                filedialog, "askopenfilename", lambda **kw: ""),
+            unittest.mock.patch.object(
+                messagebox, "showinfo", lambda *a, **kw: None),
+            unittest.mock.patch.object(
+                messagebox, "showwarning", lambda *a, **kw: None),
+            unittest.mock.patch.object(
+                messagebox, "showerror", lambda *a, **kw: None),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+
+        self.assertEqual(gui.run_gui(), 0)
+        root = tk._default_root
+        self.addCleanup(root.destroy)
+
+        widgets = {"buttons": [], "entries": [], "checks": [], "text": None}
+
+        def walk(w):
+            for c in w.winfo_children():
+                cls = c.winfo_class()
+                if cls == "TButton":
+                    widgets["buttons"].append(c)
+                elif cls in ("TEntry", "Entry"):
+                    widgets["entries"].append(c)
+                elif cls == "TCheckbutton":
+                    widgets["checks"].append(c)
+                elif cls == "Text":
+                    widgets["text"] = c
+                walk(c)
+
+        walk(root)
+
+        def refresh():
+            root.update()
+            return widgets["text"].get("1.0", "end")
+
+        return root, widgets, dlg, target, out_dir, kit_dir, refresh
+
+    def test_every_button_exists_and_works(self) -> None:
+        try:
+            import tkinter as tk  # noqa: F401
+        except ImportError:
+            self.skipTest("tkinter unavailable")
+        try:
+            probe = tk.Tk()
+            probe.destroy()
+        except tk.TclError:
+            self.skipTest("no display")
+
+        with tempfile.TemporaryDirectory() as td:
+            root, w, dlg, target, out_dir, kit_dir, refresh = \
+                self._launch(td)
+
+            labels = [b.cget("text") for b in w["buttons"]]
+            for wanted in ("Build baseline", "Field run", "Build kit"):
+                self.assertIn(wanted, labels)
+            self.assertEqual(labels.count("…"), 2)
+            self.assertEqual(len(w["entries"]), 2)
+            self.assertEqual(len(w["checks"]), 1)
+
+            # browse buttons populate the entries
+            browse = [b for b in w["buttons"] if b.cget("text") == "…"]
+            browse[0].invoke()
+            dlg["dir"] = str(out_dir)
+            browse[1].invoke()
+            refresh()
+            self.assertEqual(w["entries"][0].get(), str(target))
+            self.assertEqual(w["entries"][1].get(), str(out_dir))
+
+            # VSS checkbox toggles
+            chk = w["checks"][0]
+            before = chk.instate(["selected"])
+            chk.invoke()
+            self.assertNotEqual(chk.instate(["selected"]), before)
+
+            def btn(name):
+                return next(
+                    b for b in w["buttons"] if b.cget("text") == name)
+
+            btn("Build baseline").invoke()
+            self.assertTrue((out_dir / "baseline.db").exists())
+            self.assertIn("baseline done", refresh())
+
+            btn("Field run").invoke()
+            self.assertTrue(
+                (out_dir / "raidwatch-results.zip").exists())
+            self.assertIn("field done", refresh())
+
+            btn("Build kit").invoke()
+            self.assertTrue((kit_dir / "RUN.bat").exists())
+            self.assertIn("bundle done", refresh())
+
+            # invalid root: fail-closed, no new run starts
+            w["entries"][0].delete(0, "end")
+            w["entries"][0].insert(0, str(Path(td) / "missing"))
+            n_done = refresh().count("baseline done")
+            btn("Build baseline").invoke()
+            log = refresh()
+            self.assertIn("not an existing directory", log)
+            self.assertEqual(log.count("baseline done"), n_done)
+
+
 class TextExtractTests(unittest.TestCase):
     def test_plain_text_cp949(self) -> None:
         with tempfile.TemporaryDirectory() as td:
