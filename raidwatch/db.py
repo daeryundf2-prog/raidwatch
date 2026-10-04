@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -44,7 +44,7 @@ class FileRecord:
     status: str
 
     @classmethod
-    def from_row(cls, row: tuple) -> "FileRecord":
+    def from_row(cls, row: tuple) -> FileRecord:
         return cls(
             path=row[0],
             size=row[1],

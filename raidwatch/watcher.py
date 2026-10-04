@@ -17,7 +17,6 @@ from .common import (
     TOOL_NAME,
     TOOL_VERSION,
     append_jsonl,
-    sha256_file,
     utc_now_iso,
     write_json,
     write_manifest,

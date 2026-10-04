@@ -23,7 +23,7 @@ import sys
 import zipapp
 from pathlib import Path
 
-from .common import sha256_file, utc_now_iso, write_manifest
+from .common import sha256_file, write_manifest
 
 PYZ_NAME = "raidwatch.pyz"
 EXE_NAME = "raidwatch.exe"
@@ -553,7 +553,7 @@ seized-목록.txt 같은 이름으로 넣고 RUN.bat 을 다시 실행하면 됩
 [발송하는 변호인용] CONFIG.txt 를 미리 채워 보내면 의뢰인은 질문에
 답할 필요 없이 RUN.bat 더블클릭 + UAC "예" 만 누르면 됩니다:
   raid_datetime= 집행 일시   (미리 채우면 질문 생략)
-  dest=          결과 반송 공유폴더 경로 (예: \\서버\공유\사건001)
+  dest=          결과 반송 공유폴더 경로 (예: \\서버\\공유\\사건001)
   stamp=         인주 도장 여부 y/n/ask
   notes=         사건번호·메모
 비워둔 항목은 현장에서 평소처럼 물어봅니다.
@@ -579,7 +579,7 @@ seized-목록.txt 같은 이름으로 넣고 RUN.bat 을 다시 실행하면 됩
 
 결과를 바로 공유폴더로 반송하려면:
   RUN.bat D:\\ \\\\서버\\공유\\폴더      (두번째 인자 = 반송 위치)
-  또는  set RW_DEST=\\서버\공유\폴더  후 RUN.bat 실행
+  또는  set RW_DEST=\\서버\\공유\\폴더  후 RUN.bat 실행
 
 주의: 이 키트는 분석 결과만 만들며, 디스크 전체를 수집·반출하지 않습니다.
 분석 대상 루트를 바꾸려면 `RUN.bat D:\\` 처럼 인자를 주세요.

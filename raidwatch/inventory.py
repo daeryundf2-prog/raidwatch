@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Callable, Iterator
 
 from .common import TOOL_NAME, TOOL_VERSION, sha256_file_preserve, utc_now_iso
 from .db import FileRecord, Inventory

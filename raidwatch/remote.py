@@ -10,6 +10,7 @@ scp raidwatch-results.zip + SHA256SUMS.txt back → verify hashes.
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import zipfile
@@ -32,9 +33,20 @@ def _scp_base(port: int | None) -> list[str]:
     return cmd
 
 
+def _scp_remote(host: str, remote_path: str) -> str:
+    """Build an scp remote pathspec (``host:path``).
+
+    OpenSSH scp expands remote paths through the target's shell, so the
+    path portion is quoted — same POSIX-shell caveat as remote_cmd:
+    Windows cmd targets need a metachar-free remote_dir regardless.
+    The host portion is left untouched to preserve user@host syntax.
+    """
+    return f"{host}:{shlex.quote(remote_path)}"
+
+
 def _run(cmd: list[str], timeout: int) -> str:
     proc = subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout
+        cmd, capture_output=True, text=True, timeout=timeout, check=False
     )
     if proc.returncode != 0:
         raise OSError(
@@ -71,16 +83,16 @@ def collect_remote(
 
     # 1. push the kit
     _run(
-        _scp_base(port) + ["-r", str(kit_dir), f"{host}:{remote_dir}"],
+        _scp_base(port) + ["-r", str(kit_dir), _scp_remote(host, remote_dir)],
         timeout=300,
     )
     log.append(f"kit uploaded to {host}:{remote_dir}")
 
     # 2. run the field pipeline remotely — POSIX shell form first,
     # Windows OpenSSH (cmd) fallback
-    root_arg = f" {remote_root}" if remote_root else ""
+    root_arg = f" {shlex.quote(remote_root)}" if remote_root else ""
     remote_cmd = (
-        f"cd {remote_dir} && "
+        f"cd {shlex.quote(remote_dir)} && "
         f"(sh RUN.sh{root_arg} || cmd /c RUN.bat{root_arg})"
     )
     _run(_ssh_cmd(host, remote_cmd, port), timeout=timeout)
@@ -91,14 +103,14 @@ def collect_remote(
     sums_local = out_dir / "SHA256SUMS.txt"
     _run(
         _scp_base(port) + [
-            f"{host}:{remote_dir}/raidwatch-out/raidwatch-results.zip",
+            _scp_remote(host, f"{remote_dir}/raidwatch-out/raidwatch-results.zip"),
             str(results_local),
         ],
         timeout=600,
     )
     _run(
         _scp_base(port) + [
-            f"{host}:{remote_dir}/raidwatch-out/SHA256SUMS.txt",
+            _scp_remote(host, f"{remote_dir}/raidwatch-out/SHA256SUMS.txt"),
             str(sums_local),
         ],
         timeout=120,

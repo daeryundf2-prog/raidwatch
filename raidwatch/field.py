@@ -20,7 +20,6 @@ import hashlib
 import json
 import platform
 import re
-import shutil
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,18 +31,18 @@ from .common import (
     iter_tree, sha256_file, utc_now_iso, write_json, write_manifest,
 )
 from .containers import sniff_containers
-from .leftover import run_leftovers
-from .window import scan_window
 from .db import Inventory
 from .diff import run_diff
 from .inventory import build_inventory
 from .journal import replay_journal
+from .leftover import run_leftovers
 from .lockbox import run_lockbox
 from .mobile import collect_mobile
 from .profile import ProfileError, load_profile
 from .scan import run_scan
 from .sources import collect_sources
 from .verify import run_verify
+from .window import scan_window
 
 RESULTS_ZIP = "raidwatch-results.zip"
 SUMS_NAME = "SHA256SUMS.txt"
@@ -114,7 +113,7 @@ def _read_seizure_info(path: Path | None) -> dict:
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         labeled = {}
         for ln in lines:
-            m = re.match(r"(datetime|notes|memo|case)\s*:\s*(.*)", ln, re.I)
+            m = re.match(r"(datetime|notes|memo|case)\s*:\s*(.*)", ln, re.IGNORECASE)
             if m:
                 labeled[m.group(1).lower()] = m.group(2).strip()
         if labeled:

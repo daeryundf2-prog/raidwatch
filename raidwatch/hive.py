@@ -109,7 +109,7 @@ class Hive:
             raise HiveError("root cell missing")
 
     @classmethod
-    def from_path(cls, path: Path | str) -> "Hive":
+    def from_path(cls, path: Path | str) -> Hive:
         return cls(Path(path).read_bytes())
 
     # -- low-level ---------------------------------------------------

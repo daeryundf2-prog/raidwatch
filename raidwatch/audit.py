@@ -18,7 +18,6 @@ basis, the sharpest violation of the two.
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from .common import utc_now_iso, write_json, write_manifest

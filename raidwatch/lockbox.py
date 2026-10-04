@@ -57,7 +57,7 @@ def _parse_protectors(text: str) -> dict:
     """manage-bde -protectors -get output → structured protectors."""
     passwords = re.findall(
         r"(?:Numerical Password|Recovery Password)[:\s]+([0-9]{6}-[0-9-]+)",
-        text, re.I,
+        text, re.IGNORECASE,
     )
     key_ids = re.findall(r"ID:\s*(\{[0-9A-Fa-f-]+\})", text)
     ext_keys = re.findall(r"External Key[^\n]*", text)

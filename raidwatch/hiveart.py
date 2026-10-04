@@ -83,7 +83,7 @@ def _shimcache_win10(blob: bytes) -> list[dict]:
                 "entry_file_mtime_utc": filetime_to_iso(ft),
                 "parse": "win10_00ts",
             })
-        pos = i + (entry_size if entry_size > 4 else 4)
+        pos = i + (max(4, entry_size))
     return out
 
 

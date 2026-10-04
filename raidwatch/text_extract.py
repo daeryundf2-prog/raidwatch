@@ -21,8 +21,8 @@ from __future__ import annotations
 import io
 import re
 import struct
-import zlib
 import zipfile
+import zlib
 from pathlib import Path
 
 MAX_EXTRACT_BYTES = 64 * 1024 * 1024

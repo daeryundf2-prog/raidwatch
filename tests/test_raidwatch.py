@@ -78,7 +78,7 @@ def _creation_signal(path: Path) -> float:
 class RaidwatchFixture:
     def __init__(self, root: Path) -> None:
         self.root = root
-        _write(root / "docs" / "contract.hwp", "fake hwp body 계약서".encode("utf-8"))
+        _write(root / "docs" / "contract.hwp", "fake hwp body 계약서".encode())
         _write(root / "docs" / "notes.txt", b"plain notes")
         _write(root / "docs" / "계약서_초안.txt", b"draft")
         _write(root / "photos" / "img001.jpg", b"\xff\xd8\xffJPEGDATA")
@@ -845,7 +845,7 @@ class ContentScanTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td) / "target"
             _write(root / "plain.bin", b"binary")
-            _write(root / "memo.txt", "본문에 은밀한계약 키워드".encode("utf-8"))
+            _write(root / "memo.txt", "본문에 은밀한계약 키워드".encode())
 
             profile_path = Path(td) / "p.json"
             profile_path.write_text(
@@ -939,7 +939,7 @@ class MftTests(unittest.TestCase):
 
             dump = Path(td) / "mft.bin"
             dump.write_bytes(
-                self._record("목록.csv", "경로,해시\n".encode("utf-8"), deleted=True)
+                self._record("목록.csv", "경로,해시\n".encode(), deleted=True)
             )
             report = carve_mft(dump, Path(td) / "out")
             self.assertEqual(report["summary"]["resident_recovered"], 1)
@@ -1314,7 +1314,7 @@ class BundleFieldTests(unittest.TestCase):
             RaidwatchFixture(root)
             _write(
                 root / "Windows" / "System32" / "spool" / "PRINTERS" / "j.SPL",
-                "seized list 원본".encode("utf-8"),
+                "seized list 원본".encode(),
             )
             inputs = Path(td) / "inputs"
             inputs.mkdir()
@@ -2179,7 +2179,7 @@ class LeftoversTests(unittest.TestCase):
         # recycle bin: 압수물목록.hwp deleted inside the window
         name = "C:\\Users\\pc\\Desktop\\압수물목록.hwp"
         nb = name.encode("utf-16-le") + b"\x00\x00"
-        ft = 116444736000000000 + int(1_789_866_000 * 10_000_000)
+        ft = 116444736000000000 + (1_789_866_000 * 10_000_000)
         i_data = struct.pack("<QQQI", 2, 999, ft, len(nb) // 2) + nb
         bd = base / "$Recycle.Bin" / "S-1-5-21"
         bd.mkdir(parents=True)
@@ -2250,7 +2250,7 @@ class LeftoversTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             name = "C:\\선별결과.zip"
             nb = name.encode("utf-16-le").ljust(520, b"\x00")
-            ft = 116444736000000000 + int(1_789_866_000 * 10_000_000)
+            ft = 116444736000000000 + (1_789_866_000 * 10_000_000)
             data = struct.pack("<QQQ", 1, 777, ft) + nb
             p = Path(td) / "$IXYZ.zip"
             p.write_bytes(data)
@@ -2271,7 +2271,7 @@ class LeftoversTests(unittest.TestCase):
             bin_dir = base / "RECYCLER" / "S-1-5-21"
             bin_dir.mkdir(parents=True)
             name = "선별결과.zip"
-            ft = 116444736000000000 + int(1_789_866_000 * 10_000_000)
+            ft = 116444736000000000 + (1_789_866_000 * 10_000_000)
             rec = bytearray(800)
             struct.pack_into("<I", rec, 0, 3)          # index
             rec[4:8] = b"C:\\\x00"                     # drive

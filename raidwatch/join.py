@@ -24,7 +24,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from .common import sha256_file, utc_now_iso, write_json
+from .common import utc_now_iso, write_json
 
 _PART_RE = re.compile(r"^(?P<base>.+\.zip)\.(?P<idx>\d{3,})$")
 _HEADER_RE = re.compile(r"whole-zip sha256:\s*([0-9a-fA-F]{64})")

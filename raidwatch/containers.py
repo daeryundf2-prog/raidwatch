@@ -18,9 +18,7 @@ looks under /Volumes, /media, /mnt.
 from __future__ import annotations
 
 import platform
-import re
 import string
-from datetime import datetime, timezone
 from pathlib import Path
 
 from .common import ns_to_iso, sha256_file, utc_now_iso, write_json, write_manifest
