@@ -1555,7 +1555,6 @@ class LnkParserTests(unittest.TestCase):
         suffix = "report.pdf".encode("utf-16-le") + b"\x00\x00"
         hdr_size = 0x24
         li = struct.pack("<I", 0)  # placeholder size
-        li_hdr_len = hdr_size + len(base) + len(suffix)
         base_off = hdr_size
         suffix_off = base_off + len(base)
         ubase_off = 0

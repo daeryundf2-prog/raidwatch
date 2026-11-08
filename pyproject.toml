@@ -21,5 +21,10 @@ test = [
   "vulture>=2.11",
 ]
 
+[tool.ruff.lint]
+# ruff 0.16 widened its implicit default rule set; keep the classic
+# default (pycodestyle E4/E7/E9 + pyflakes F) that this repo was written against.
+select = ["E4", "E7", "E9", "F"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["raidwatch"]

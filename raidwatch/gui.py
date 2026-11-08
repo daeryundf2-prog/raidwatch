@@ -17,7 +17,7 @@ from pathlib import Path
 def run_gui() -> int:
     try:
         import tkinter as tk
-        from tkinter import filedialog, messagebox, ttk
+        from tkinter import filedialog, ttk
     except ImportError:
         print("tkinter unavailable — use the CLI commands instead")
         return 2
